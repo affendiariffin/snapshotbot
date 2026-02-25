@@ -10,11 +10,11 @@
 -- ----------------------------------------------------------------
 -- Config
 -- ----------------------------------------------------------------
-local SNAPSHOT_INTERVAL  = 300   -- periodic snapshot every 5 minutes
+local SNAPSHOT_INTERVAL  = 60    -- periodic snapshot every 1 minute
 local POLL_INTERVAL      = 2     -- how often (seconds) to check if game started
 
 -- Auto-detect output folder next to TTS's own data directory.
-local SNAPSHOT_FOLDER = "C:/Users/User/Documents/Snapshots/"
+local SNAPSHOT_FOLDER = "C:/Users/User/Documents/My Games/Tabletop Simulator/Snapshots/"
 
 -- ----------------------------------------------------------------
 -- State
@@ -273,10 +273,10 @@ local function startPeriodicSnapshots()
     end
     _snapshot_timer = Wait.time(function()
         if _game_started then
-            takeSnapshot("periodic_5min")
+            takeSnapshot("periodic_1min")
         end
     end, SNAPSHOT_INTERVAL, -1)  -- -1 = repeat forever
-    printToAll("[GameStateSnapshot] Periodic snapshots every 5 min.",
+    printToAll("[GameStateSnapshot] Periodic snapshots every 1 min.",
         {0.6, 0.8, 1})
 end
 
