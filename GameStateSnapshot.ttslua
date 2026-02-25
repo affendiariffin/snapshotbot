@@ -1,0 +1,349 @@
+-- ============================================================
+-- GameStateSnapshot Mod  v1.0
+-- Additive mod for: Hutber 40k Competitive 10e Map Base
+--
+-- INSTALL: Additive Load this mod on top of the Hutber mod.
+-- The script lives on the invisible object inside this mod —
+-- no changes to Hutber's scripts needed.
+-- ============================================================
+
+-- ----------------------------------------------------------------
+-- Config
+-- ----------------------------------------------------------------
+local SNAPSHOT_INTERVAL  = 300   -- periodic snapshot every 5 minutes
+local POLL_INTERVAL      = 2     -- how often (seconds) to check if game started
+
+-- Auto-detect output folder next to TTS's own data directory.
+local SNAPSHOT_FOLDER = "C:/Users/User/Documents/coding_projects/TTS snapshot/"
+
+-- ----------------------------------------------------------------
+-- State
+-- ----------------------------------------------------------------
+local _game_started    = false
+local _snapshot_count  = 0
+local _session_folder  = nil
+local _snapshot_timer  = nil   -- Wait handle for periodic snapshots
+local _poll_timer      = nil   -- Wait handle for start-game polling
+
+local START_MENU_GUID  = "738804"
+
+-- ----------------------------------------------------------------
+-- Utility: timestamp string  2026-02-25_14-30-00
+-- ----------------------------------------------------------------
+local function getTimestamp()
+    local d = os.date("*t", os.time())
+    return string.format("%04d-%02d-%02d_%02d-%02d-%02d",
+        d.year, d.month, d.day, d.hour, d.min, d.sec)
+end
+
+-- ----------------------------------------------------------------
+-- Helpers: read Hutber's data directly
+-- ----------------------------------------------------------------
+local function getCounterValue(guidVarName)
+    local guid = Global.getVar(guidVarName)
+    if not guid then return nil end
+    local obj = getObjectFromGUID(guid)
+    if not obj or not obj.Counter then return nil end
+    local ok, val = pcall(function() return obj.Counter.getValue() end)
+    return ok and tonumber(val) or nil
+end
+
+local function getMatchSummary()
+    local guid = Global.getVar("scoresheet_GUID")
+    if not guid then return nil end
+    local obj = getObjectFromGUID(guid)
+    if not obj then return nil end
+    local ok, summary = pcall(function() return obj.call("getMatchSummary") end)
+    return (ok and type(summary) == "table") and summary or nil
+end
+
+local function getStartMenuVar(varName)
+    local obj = getObjectFromGUID(START_MENU_GUID)
+    if not obj then return nil end
+    local ok, val = pcall(function() return obj.getVar(varName) end)
+    return ok and val or nil
+end
+
+local function getZoneCardName(guidVarName)
+    local guid = Global.getVar(guidVarName)
+    if not guid then return nil end
+    local zone = getObjectFromGUID(guid)
+    if not zone then return nil end
+    local ok, objects = pcall(function() return zone.getObjects() end)
+    if not ok or not objects or #objects == 0 then return nil end
+    local ok2, name = pcall(function() return objects[1].getName() end)
+    return (ok2 and name ~= "") and name or nil
+end
+
+local function getPlayerInfo(color)
+    local p = Player[color]
+    if not p or not p.seated then return nil end
+    return {
+        steam_name = p.steam_name or "",
+        steam_id   = tostring(p.steam_id or ""),
+    }
+end
+
+-- ----------------------------------------------------------------
+-- Helpers: objects on the battle mat only
+-- ----------------------------------------------------------------
+local EXCLUDED_TAGS = {
+    ScriptingZone = true, Fog = true, FogOfWar = true,
+    Zone = true, Hand = true,
+}
+local LOCKED_GM_NOTES = {
+    deployZone = true, deployZone9 = true,
+    objective = true, areaDeny = true, quarter = true,
+}
+
+local function getMatBounds()
+    local matGuid = Global.getVar("mat_GUID")
+    if not matGuid then return nil, nil end
+    local mat = getObjectFromGUID(matGuid)
+    if not mat then return nil, nil end
+    local ok, bounds = pcall(function() return mat.getBounds() end)
+    if not ok or not bounds then return nil, nil end
+    return bounds, mat
+end
+
+local function isInsideBounds(pos, bounds)
+    local c, s = bounds.center, bounds.size
+    return pos.x >= (c.x - s.x * 0.5)
+       and pos.x <= (c.x + s.x * 0.5)
+       and pos.z >= (c.z - s.z * 0.5)
+       and pos.z <= (c.z + s.z * 0.5)
+end
+
+local function getObjectsOnMat()
+    local bounds, mat = getMatBounds()
+    if not bounds then return {} end
+    local result = {}
+    for _, obj in ipairs(getAllObjects()) do
+        if obj == mat then goto continue end
+        if EXCLUDED_TAGS[obj.tag] then goto continue end
+        local gmNote = ""
+        pcall(function() gmNote = obj.getGMNotes() or "" end)
+        if LOCKED_GM_NOTES[gmNote] then goto continue end
+        local name = ""
+        pcall(function() name = obj.getName() or "" end)
+        local pos = obj.getPosition()
+        if isInsideBounds(pos, bounds) then
+            local rot = obj.getRotation()
+            local objSize = { x = 1, z = 1 }
+            pcall(function()
+                local b = obj.getBounds()
+                objSize = {
+                    x = math.floor(b.size.x * 100 + 0.5) / 100,
+                    z = math.floor(b.size.z * 100 + 0.5) / 100,
+                }
+            end)
+            table.insert(result, {
+                guid        = obj.getGUID(),
+                name        = name,
+                tag         = obj.tag,
+                position    = { x = math.floor(pos.x * 100 + 0.5) / 100,
+                                z = math.floor(pos.z * 100 + 0.5) / 100 },
+                rotation_y  = math.floor(rot.y * 10 + 0.5) / 10,
+                size        = objSize,
+                locked      = obj.getLock(),
+                description = obj.getDescription(),
+            })
+        end
+        ::continue::
+    end
+    return result
+end
+
+-- ----------------------------------------------------------------
+-- Session folder: one subfolder per game, named by start time
+-- ----------------------------------------------------------------
+local function initSessionFolder()
+    _session_folder = SNAPSHOT_FOLDER .. getTimestamp() .. "/"
+    pcall(function()
+        local f = io.open(_session_folder .. ".session", "w")
+        if f then f:write("session started\n") f:close() end
+    end)
+end
+
+-- ----------------------------------------------------------------
+-- Core: take a snapshot and write to disk
+-- ----------------------------------------------------------------
+local function takeSnapshot(reason)
+    local timestamp = getTimestamp()
+    _snapshot_count = _snapshot_count + 1
+
+    local redTotal   = getCounterValue("redVPCounter_GUID")
+    local blueTotal  = getCounterValue("blueVPCounter_GUID")
+    local round      = getCounterValue("gameTurnCounter_GUID")
+    local redCP      = getCounterValue("redCPCounter_GUID")
+    local blueCP     = getCounterValue("blueCPCounter_GUID")
+
+    local summary    = getMatchSummary()
+    local redRounds  = summary and summary.red  and summary.red.rounds  or {}
+    local blueRounds = summary and summary.blue and summary.blue.rounds or {}
+
+    local mapData    = Global.getTable("ttsLastLoadedMap") or {}
+
+    local state = {
+        meta = {
+            reason         = reason,
+            timestamp      = timestamp,
+            snapshot_index = _snapshot_count,
+            mod_name       = "GameStateSnapshot v1.0",
+        },
+        game = {
+            round        = round,  -- requires physical counter to be clicked
+            current_turn = getStartMenuVar("currentTurn"),  -- always accurate
+            first_player = getStartMenuVar("first"),
+            game_mode    = getStartMenuVar("gameMode"),
+            singles_mode = getStartMenuVar("singlesMode"),
+        },
+        mission = {
+            deployment       = getZoneCardName("deploymentCardZone_GUID"),
+            primary          = getZoneCardName("primaryCardZone_GUID"),
+            red_secondaries  = {
+                getZoneCardName("secondary11CardZone_GUID"),
+                getZoneCardName("secondary12CardZone_GUID"),
+            },
+            blue_secondaries = {
+                getZoneCardName("secondary21CardZone_GUID"),
+                getZoneCardName("secondary22CardZone_GUID"),
+            },
+            mission_pack  = getStartMenuVar("missionPackData") and
+                            getStartMenuVar("missionPackData").name or nil,
+            map_pack      = mapData.mapPack,
+            map_name      = mapData.mapName,
+            map_variant   = mapData.mapVariant,
+            map_id        = mapData.mapId,
+            map_layout    = mapData.mapLayout,
+            map_key       = mapData.mapKey,
+        },
+        players = {
+            red  = getPlayerInfo("Red"),
+            blue = getPlayerInfo("Blue"),
+        },
+        scores = {
+            red = {
+                total      = redTotal,
+                cp         = redCP,
+                primary    = summary and summary.red and summary.red.primary,
+                secondary  = summary and summary.red and summary.red.secondary,
+                challenger = summary and summary.red and summary.red.challenger,
+                rounds     = redRounds,
+            },
+            blue = {
+                total      = blueTotal,
+                cp         = blueCP,
+                primary    = summary and summary.blue and summary.blue.primary,
+                secondary  = summary and summary.blue and summary.blue.secondary,
+                challenger = summary and summary.blue and summary.blue.challenger,
+                rounds     = blueRounds,
+            },
+        },
+        battlefield_objects = getObjectsOnMat(),
+    }
+
+    local folder   = _session_folder or SNAPSHOT_FOLDER
+    local filename = folder ..
+        string.format("snapshot_%03d_%s.json", _snapshot_count, timestamp)
+    local json_str = JSON.encode_pretty(state)
+
+    local success = pcall(function()
+        local file = io.open(filename, "w")
+        if file then file:write(json_str) file:close()
+        else error("Could not open: " .. filename) end
+    end)
+
+    if success then
+        printToAll(string.format(
+            "[GameStateSnapshot] #%d (%s) R%s | Red %s - Blue %s",
+            _snapshot_count, reason,
+            tostring(round or "?"),
+            tostring(redTotal or "?"),
+            tostring(blueTotal or "?")), {0.4, 1, 0.4})
+    else
+        printToAll(string.format(
+            "[GameStateSnapshot] ERROR on snapshot #%d. Folder: %s",
+            _snapshot_count, folder), {1, 0.3, 0.3})
+    end
+end
+
+-- ----------------------------------------------------------------
+-- Periodic snapshot timer (uses Wait.time, works on object scripts)
+-- ----------------------------------------------------------------
+local function startPeriodicSnapshots()
+    if _snapshot_timer then
+        Wait.stop(_snapshot_timer)
+    end
+    _snapshot_timer = Wait.time(function()
+        if _game_started then
+            takeSnapshot("periodic_5min")
+        end
+    end, SNAPSHOT_INTERVAL, -1)  -- -1 = repeat forever
+    printToAll("[GameStateSnapshot] Periodic snapshots every 5 min.",
+        {0.6, 0.8, 1})
+end
+
+-- ----------------------------------------------------------------
+-- Game-start detection via polling (works on object scripts)
+-- Polls every POLL_INTERVAL seconds until inGame flips to true
+-- on the Hutber startMenu object (GUID 738804).
+-- ----------------------------------------------------------------
+local function onGameStarted()
+    if _game_started then return end
+    _game_started = true
+
+    if _poll_timer then
+        Wait.stop(_poll_timer)
+        _poll_timer = nil
+    end
+
+    initSessionFolder()
+    printToAll("[GameStateSnapshot] Game started - taking initial snapshot.",
+        {1, 0.9, 0.3})
+    printToAll("[GameStateSnapshot] Saving to: " .. (_session_folder or SNAPSHOT_FOLDER),
+        {0.7, 0.7, 0.7})
+    takeSnapshot("game_start")
+    startPeriodicSnapshots()
+end
+
+local function startPolling()
+    _poll_timer = Wait.time(function()
+        local inGame = false
+        pcall(function()
+            local startMenu = getObjectFromGUID(START_MENU_GUID)
+            if startMenu then
+                inGame = startMenu.getVar("inGame") == true
+            end
+        end)
+        if inGame then
+            onGameStarted()
+        end
+    end, POLL_INTERVAL, -1)
+end
+
+-- ----------------------------------------------------------------
+-- Cleanup: fires when the object is destroyed or table unloads
+-- (including returning to main menu from an additive load session)
+-- ----------------------------------------------------------------
+function onDestroy()
+    if _snapshot_timer then Wait.stop(_snapshot_timer) _snapshot_timer = nil end
+    if _poll_timer then Wait.stop(_poll_timer) _poll_timer = nil end
+    printToAll("[GameStateSnapshot] Stopped.", {0.7, 0.7, 0.7})
+end
+
+-- ----------------------------------------------------------------
+-- Entry point
+-- ----------------------------------------------------------------
+function onLoad()
+    _game_started   = false
+    _snapshot_count = 0
+    _session_folder = nil
+
+    printToAll("[GameStateSnapshot] Loaded - waiting for game to start...",
+        {0.7, 0.7, 0.7})
+    printToAll("[GameStateSnapshot] Snapshots will save to: " .. SNAPSHOT_FOLDER,
+        {0.7, 0.7, 0.7})
+
+    startPolling()
+end
