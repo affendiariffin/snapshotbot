@@ -55,7 +55,10 @@ local function getMatchSummary()
     local obj = getObjectFromGUID(guid)
     if not obj then return nil end
     local ok, summary = pcall(function() return obj.call("getMatchSummary") end)
-    return (ok and type(summary) == "table") and summary or nil
+    if not (ok and type(summary) == "table") then return nil end
+    -- JSON round-trip to get a locally-owned copy (avoids cross-script resource error)
+    local ok2, clean = pcall(function() return JSON.decode(JSON.encode(summary)) end)
+    return ok2 and clean or nil
 end
 
 local function getStartMenuVar(varName)
@@ -210,8 +213,12 @@ local function takeSnapshot(reason)
                 getZoneCardName("secondary21CardZone_GUID"),
                 getZoneCardName("secondary22CardZone_GUID"),
             },
-            mission_pack  = getStartMenuVar("missionPackData") and
-                            getStartMenuVar("missionPackData").name or nil,
+            mission_pack  = (function()
+                local raw = getStartMenuVar("missionPackData")
+                if type(raw) ~= "table" then return nil end
+                local ok, clean = pcall(function() return JSON.decode(JSON.encode(raw)) end)
+                return ok and clean and clean.name or nil
+            end)(),
             map_pack      = mapData.mapPack,
             map_name      = mapData.mapName,
             map_variant   = mapData.mapVariant,
