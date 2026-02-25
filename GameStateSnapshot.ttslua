@@ -244,10 +244,10 @@ local function takeSnapshot(reason)
         string.format("%s_snap%03d.json", _session_id or "nosession", _snapshot_count)
     local json_str = JSON.encode_pretty(state)
 
-    local success = pcall(function()
+    local success, err = pcall(function()
         local file = io.open(filename, "w")
         if file then file:write(json_str) file:close()
-        else error("Could not open: " .. filename) end
+        else error("io.open returned nil for: " .. filename) end
     end)
 
     if success then
@@ -259,8 +259,8 @@ local function takeSnapshot(reason)
             tostring(blueTotal or "?")), {0.4, 1, 0.4})
     else
         printToAll(string.format(
-            "[GameStateSnapshot] ERROR on snapshot #%d. Check folder exists: %s",
-            _snapshot_count, SNAPSHOT_FOLDER), {1, 0.3, 0.3})
+            "[GameStateSnapshot] ERROR #%d: %s",
+            _snapshot_count, tostring(err)), {1, 0.3, 0.3})
     end
 end
 
