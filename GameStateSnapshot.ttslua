@@ -19,11 +19,12 @@ local SNAPSHOT_FOLDER = "C:/Users/User/Documents/coding_projects/TTS snapshot/"
 -- ----------------------------------------------------------------
 -- State
 -- ----------------------------------------------------------------
-local _game_started    = false
-local _snapshot_count  = 0
-local _session_folder  = nil
-local _snapshot_timer  = nil   -- Wait handle for periodic snapshots
-local _poll_timer      = nil   -- Wait handle for start-game polling
+local _game_started      = false
+local _snapshot_count    = 0
+local _session_folder    = nil
+local _snapshot_timer    = nil   -- Wait handle for periodic snapshots
+local _poll_timer        = nil   -- Wait handle for start-game polling
+local _hutber_detected   = false -- whether Hutber's start menu has been found
 
 local START_MENU_GUID  = "738804"
 
@@ -119,37 +120,37 @@ local function getObjectsOnMat()
     if not bounds then return {} end
     local result = {}
     for _, obj in ipairs(getAllObjects()) do
-        if obj == mat then goto continue end
-        if EXCLUDED_TAGS[obj.tag] then goto continue end
-        local gmNote = ""
-        pcall(function() gmNote = obj.getGMNotes() or "" end)
-        if LOCKED_GM_NOTES[gmNote] then goto continue end
-        local name = ""
-        pcall(function() name = obj.getName() or "" end)
-        local pos = obj.getPosition()
-        if isInsideBounds(pos, bounds) then
-            local rot = obj.getRotation()
-            local objSize = { x = 1, z = 1 }
-            pcall(function()
-                local b = obj.getBounds()
-                objSize = {
-                    x = math.floor(b.size.x * 100 + 0.5) / 100,
-                    z = math.floor(b.size.z * 100 + 0.5) / 100,
-                }
-            end)
-            table.insert(result, {
-                guid        = obj.getGUID(),
-                name        = name,
-                tag         = obj.tag,
-                position    = { x = math.floor(pos.x * 100 + 0.5) / 100,
-                                z = math.floor(pos.z * 100 + 0.5) / 100 },
-                rotation_y  = math.floor(rot.y * 10 + 0.5) / 10,
-                size        = objSize,
-                locked      = obj.getLock(),
-                description = obj.getDescription(),
-            })
+        if obj ~= mat and not EXCLUDED_TAGS[obj.tag] then
+            local gmNote = ""
+            pcall(function() gmNote = obj.getGMNotes() or "" end)
+            if not LOCKED_GM_NOTES[gmNote] then
+                local name = ""
+                pcall(function() name = obj.getName() or "" end)
+                local pos = obj.getPosition()
+                if isInsideBounds(pos, bounds) then
+                    local rot = obj.getRotation()
+                    local objSize = { x = 1, z = 1 }
+                    pcall(function()
+                        local b = obj.getBounds()
+                        objSize = {
+                            x = math.floor(b.size.x * 100 + 0.5) / 100,
+                            z = math.floor(b.size.z * 100 + 0.5) / 100,
+                        }
+                    end)
+                    table.insert(result, {
+                        guid        = obj.getGUID(),
+                        name        = name,
+                        tag         = obj.tag,
+                        position    = { x = math.floor(pos.x * 100 + 0.5) / 100,
+                                        z = math.floor(pos.z * 100 + 0.5) / 100 },
+                        rotation_y  = math.floor(rot.y * 10 + 0.5) / 10,
+                        size        = objSize,
+                        locked      = obj.getLock(),
+                        description = obj.getDescription(),
+                    })
+                end
+            end
         end
-        ::continue::
     end
     return result
 end
@@ -309,13 +310,17 @@ end
 
 local function startPolling()
     _poll_timer = Wait.time(function()
+        local startMenu = getObjectFromGUID(START_MENU_GUID)
+        if not startMenu then return end
+
+        if not _hutber_detected then
+            _hutber_detected = true
+            printToAll("[GameStateSnapshot] Hutber mod detected - waiting for game start.",
+                {0.4, 1, 0.4})
+        end
+
         local inGame = false
-        pcall(function()
-            local startMenu = getObjectFromGUID(START_MENU_GUID)
-            if startMenu then
-                inGame = startMenu.getVar("inGame") == true
-            end
-        end)
+        pcall(function() inGame = startMenu.getVar("inGame") == true end)
         if inGame then
             onGameStarted()
         end
@@ -329,6 +334,7 @@ end
 function onDestroy()
     if _snapshot_timer then Wait.stop(_snapshot_timer) _snapshot_timer = nil end
     if _poll_timer then Wait.stop(_poll_timer) _poll_timer = nil end
+    _hutber_detected = false
     printToAll("[GameStateSnapshot] Stopped.", {0.7, 0.7, 0.7})
 end
 
@@ -336,14 +342,24 @@ end
 -- Entry point
 -- ----------------------------------------------------------------
 function onLoad()
-    _game_started   = false
-    _snapshot_count = 0
-    _session_folder = nil
+    _game_started    = false
+    _snapshot_count  = 0
+    _session_folder  = nil
+    _hutber_detected = false
 
-    printToAll("[GameStateSnapshot] Loaded - waiting for game to start...",
+    printToAll("[GameStateSnapshot] Loaded. Snapshots → " .. SNAPSHOT_FOLDER,
         {0.7, 0.7, 0.7})
-    printToAll("[GameStateSnapshot] Snapshots will save to: " .. SNAPSHOT_FOLDER,
-        {0.7, 0.7, 0.7})
+
+    -- Check immediately in case Hutber was already loaded before us
+    local startMenu = getObjectFromGUID(START_MENU_GUID)
+    if startMenu then
+        _hutber_detected = true
+        printToAll("[GameStateSnapshot] Hutber mod detected - waiting for game start.",
+            {0.4, 1, 0.4})
+    else
+        printToAll("[GameStateSnapshot] Hutber not found yet - will detect when ready.",
+            {0.7, 0.7, 0.7})
+    end
 
     startPolling()
 end
