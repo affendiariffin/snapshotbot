@@ -38,6 +38,56 @@ local function getTimestamp()
 end
 
 -- ----------------------------------------------------------------
+-- Pure-Lua JSON serializer (no TTS JSON global required)
+-- ----------------------------------------------------------------
+local function serialize(val)
+    local t = type(val)
+    if val == nil then
+        return "null"
+    elseif t == "boolean" then
+        return tostring(val)
+    elseif t == "number" then
+        if val ~= val then return "null" end
+        return tostring(val)
+    elseif t == "string" then
+        return '"' .. val:gsub('\\','\\\\'):gsub('"','\\"')
+                        :gsub('\n','\\n'):gsub('\r','\\r'):gsub('\t','\\t') .. '"'
+    elseif t == "table" then
+        local isArr = (#val > 0)
+        if isArr then
+            for k in pairs(val) do
+                if type(k) ~= "number" or k ~= math.floor(k) or k < 1 or k > #val then
+                    isArr = false; break
+                end
+            end
+        end
+        if isArr then
+            local out = {}
+            for i = 1, #val do out[i] = serialize(val[i]) end
+            return "[" .. table.concat(out, ",") .. "]"
+        else
+            local out = {}
+            for k, v in pairs(val) do
+                if type(k) == "string" then
+                    table.insert(out, '"' .. k .. '":' .. serialize(v))
+                end
+            end
+            return "{" .. table.concat(out, ",") .. "}"
+        end
+    else
+        return '"[' .. t .. ']"'
+    end
+end
+
+-- Deep-copy a cross-script table into local memory
+local function deepCopy(val)
+    if type(val) ~= "table" then return val end
+    local copy = {}
+    for k, v in pairs(val) do copy[k] = deepCopy(v) end
+    return copy
+end
+
+-- ----------------------------------------------------------------
 -- Helpers: read Hutber's data directly
 -- ----------------------------------------------------------------
 local function getCounterValue(guidVarName)
@@ -56,8 +106,8 @@ local function getMatchSummary()
     if not obj then return nil end
     local ok, summary = pcall(function() return obj.call("getMatchSummary") end)
     if not (ok and type(summary) == "table") then return nil end
-    -- JSON round-trip to get a locally-owned copy (avoids cross-script resource error)
-    local ok2, clean = pcall(function() return JSON.decode(JSON.encode(summary)) end)
+    -- deep-copy into local memory (avoids cross-script resource error)
+    local ok2, clean = pcall(function() return deepCopy(summary) end)
     return ok2 and clean or nil
 end
 
@@ -205,7 +255,7 @@ local function takeSnapshot(reason)
             mission_pack  = (function()
                 local raw = getStartMenuVar("missionPackData")
                 if type(raw) ~= "table" then return nil end
-                local ok, clean = pcall(function() return JSON.decode(JSON.encode(raw)) end)
+                local ok, clean = pcall(function() return deepCopy(raw) end)
                 return ok and clean and clean.name or nil
             end)(),
             map_pack      = mapData.mapPack,
@@ -242,7 +292,7 @@ local function takeSnapshot(reason)
 
     local filename = SNAPSHOT_FOLDER ..
         string.format("%s_snap%03d.json", _session_id or "nosession", _snapshot_count)
-    local json_str = JSON.encode(state)
+    local json_str = serialize(state)
 
     local success, err = pcall(function()
         local file = io.open(filename, "w")
