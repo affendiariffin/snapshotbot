@@ -14,7 +14,7 @@ local SNAPSHOT_INTERVAL  = 300   -- periodic snapshot every 5 minutes
 local POLL_INTERVAL      = 2     -- how often (seconds) to check if game started
 
 -- Auto-detect output folder next to TTS's own data directory.
-local SNAPSHOT_FOLDER = "C:/Users/User/Documents/coding_projects/TTS snapshot/"
+local SNAPSHOT_FOLDER = "C:/Users/User/Documents/Snapshots/"
 
 -- ----------------------------------------------------------------
 -- State
