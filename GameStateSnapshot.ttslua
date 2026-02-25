@@ -21,7 +21,7 @@ local SNAPSHOT_FOLDER = "C:/Users/User/Documents/coding_projects/TTS snapshot/"
 -- ----------------------------------------------------------------
 local _game_started      = false
 local _snapshot_count    = 0
-local _session_folder    = nil
+local _session_id        = nil   -- timestamp string set when the game starts
 local _snapshot_timer    = nil   -- Wait handle for periodic snapshots
 local _poll_timer        = nil   -- Wait handle for start-game polling
 local _hutber_detected   = false -- whether Hutber's start menu has been found
@@ -159,17 +159,6 @@ local function getObjectsOnMat()
 end
 
 -- ----------------------------------------------------------------
--- Session folder: one subfolder per game, named by start time
--- ----------------------------------------------------------------
-local function initSessionFolder()
-    _session_folder = SNAPSHOT_FOLDER .. getTimestamp() .. "/"
-    pcall(function()
-        local f = io.open(_session_folder .. ".session", "w")
-        if f then f:write("session started\n") f:close() end
-    end)
-end
-
--- ----------------------------------------------------------------
 -- Core: take a snapshot and write to disk
 -- ----------------------------------------------------------------
 local function takeSnapshot(reason)
@@ -251,9 +240,8 @@ local function takeSnapshot(reason)
         battlefield_objects = getObjectsOnMat(),
     }
 
-    local folder   = _session_folder or SNAPSHOT_FOLDER
-    local filename = folder ..
-        string.format("snapshot_%03d_%s.json", _snapshot_count, timestamp)
+    local filename = SNAPSHOT_FOLDER ..
+        string.format("%s_snap%03d.json", _session_id or "nosession", _snapshot_count)
     local json_str = JSON.encode_pretty(state)
 
     local success = pcall(function()
@@ -271,8 +259,8 @@ local function takeSnapshot(reason)
             tostring(blueTotal or "?")), {0.4, 1, 0.4})
     else
         printToAll(string.format(
-            "[GameStateSnapshot] ERROR on snapshot #%d. Folder: %s",
-            _snapshot_count, folder), {1, 0.3, 0.3})
+            "[GameStateSnapshot] ERROR on snapshot #%d. Check folder exists: %s",
+            _snapshot_count, SNAPSHOT_FOLDER), {1, 0.3, 0.3})
     end
 end
 
@@ -306,10 +294,10 @@ local function onGameStarted()
         _poll_timer = nil
     end
 
-    initSessionFolder()
+    _session_id = getTimestamp()
     printToAll("[GameStateSnapshot] Game started - taking initial snapshot.",
         {1, 0.9, 0.3})
-    printToAll("[GameStateSnapshot] Saving to: " .. (_session_folder or SNAPSHOT_FOLDER),
+    printToAll("[GameStateSnapshot] Saving to: " .. SNAPSHOT_FOLDER,
         {0.7, 0.7, 0.7})
     takeSnapshot("game_start")
     startPeriodicSnapshots()
@@ -351,7 +339,7 @@ end
 function onLoad()
     _game_started    = false
     _snapshot_count  = 0
-    _session_folder  = nil
+    _session_id      = nil
     _hutber_detected = false
 
     printToAll("[GameStateSnapshot] Loaded. Snapshots → " .. SNAPSHOT_FOLDER,
