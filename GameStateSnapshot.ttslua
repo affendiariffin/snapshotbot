@@ -1,10 +1,26 @@
 -- ============================================================
--- GameStateSnapshot Mod  v1.0
+-- GameStateSnapshot Mod  v1.1
 -- Additive mod for: Hutber 40k Competitive 10e Map Base
 --
 -- INSTALL: Additive Load this mod on top of the Hutber mod.
 -- The script lives on the invisible object inside this mod —
 -- no changes to Hutber's scripts needed.
+--
+-- v1.1 changes vs v1.0:
+--   - Terrain size now uses getScale() instead of getBounds(),
+--     giving the exact floor footprint rather than the inflated
+--     3D-mesh bounding box.
+--   - Terrain detection now uses BCBtype="terrain" from the
+--     object's LuaScript (reliable) in addition to the previous
+--     name-keyword fallback.
+--   - For Custom_Model terrain (L-shapes, V-shapes), child
+--     BlockSquare objects are captured with their world-space
+--     position and scale, enabling accurate shape rendering.
+--   - Objective tokens (name = "Objective") are no longer
+--     excluded by the GM Notes filter — they are captured and
+--     tagged as type="objective".
+--   - "objective" removed from LOCKED_GM_NOTES (that note
+--     belongs to invisible scripting zones, not physical tokens).
 -- ============================================================
 
 -- ----------------------------------------------------------------
@@ -35,6 +51,14 @@ local function getTimestamp()
     local d = os.date("*t", os.time())
     return string.format("%04d-%02d-%02d_%02d-%02d-%02d",
         d.year, d.month, d.day, d.hour, d.min, d.sec)
+end
+
+-- ----------------------------------------------------------------
+-- Utility: round a number to N decimal places
+-- ----------------------------------------------------------------
+local function rnd(val, dec)
+    local m = 10 ^ (dec or 2)
+    return math.floor(val * m + 0.5) / m
 end
 
 -- ----------------------------------------------------------------
@@ -106,7 +130,6 @@ local function getMatchSummary()
     if not obj then return nil end
     local ok, summary = pcall(function() return obj.call("getMatchSummary") end)
     if not (ok and type(summary) == "table") then return nil end
-    -- deep-copy into local memory (avoids cross-script resource error)
     local ok2, clean = pcall(function() return deepCopy(summary) end)
     return ok2 and clean or nil
 end
@@ -145,9 +168,13 @@ local EXCLUDED_TAGS = {
     ScriptingZone = true, Fog = true, FogOfWar = true,
     Zone = true, Hand = true,
 }
+
+-- GM Notes on invisible scripting-zone markers — NOT on physical tokens.
+-- "objective" removed in v1.1: physical objective tokens have empty GM Notes
+-- and were being incorrectly excluded by this filter.
 local LOCKED_GM_NOTES = {
     deployZone = true, deployZone9 = true,
-    objective = true, areaDeny = true, quarter = true,
+    areaDeny = true, quarter = true, mat_GUID = true,
 }
 
 local function getMatBounds()
@@ -168,39 +195,151 @@ local function isInsideBounds(pos, bounds)
        and pos.z <= (c.z + s.z * 0.5)
 end
 
+-- ----------------------------------------------------------------
+-- Terrain detection via BCBtype in LuaScript (v1.1)
+-- Hutber terrain pieces carry:  BCBtype = "terrain"
+-- This is more reliable than name-keyword matching.
+-- ----------------------------------------------------------------
+local function isBCBTerrain(obj)
+    local script = ""
+    pcall(function() script = obj.getLuaScript() or "" end)
+    return script:find('BCBtype%s*=%s*"terrain"') ~= nil
+end
+
+-- ----------------------------------------------------------------
+-- Capture child BlockSquare floor-plates for Custom_Model terrain.
+--
+-- Structure in Hutber terrain pieces:
+--   BlockSquare root   → root IS the floor plate; use root scale directly.
+--   Custom_Model root  → root is a wall mesh; find the direct BlockSquare
+--                        child which holds the floor plate scale & position.
+--
+-- Child positions in the Lua JSON are LOCAL to the parent.
+-- TTS obj.getObjects() returns live objects whose getPosition() is already
+-- WORLD-SPACE, so no manual rotation maths needed.
+-- ----------------------------------------------------------------
+local function getTerrainChildren(obj)
+    local children = {}
+    pcall(function()
+        for _, child in ipairs(obj.getObjects()) do
+            if child.name == "BlockSquare" then
+                local cp  = child.getPosition()
+                local cs  = child.getScale()
+                local cr  = child.getRotation()
+                table.insert(children, {
+                    position   = { x = rnd(cp.x), z = rnd(cp.z) },
+                    size       = { x = rnd(cs.x), z = rnd(cs.z) },
+                    rotation_y = rnd(cr.y, 1),
+                })
+            end
+        end
+    end)
+    return children
+end
+
+-- ----------------------------------------------------------------
+-- Main object collector
+-- ----------------------------------------------------------------
 local function getObjectsOnMat()
     local bounds, mat = getMatBounds()
     if not bounds then return {} end
     local result = {}
+
     for _, obj in ipairs(getAllObjects()) do
         if obj ~= mat and not EXCLUDED_TAGS[obj.tag] then
             local gmNote = ""
             pcall(function() gmNote = obj.getGMNotes() or "" end)
+
             if not LOCKED_GM_NOTES[gmNote] then
                 local name = ""
                 pcall(function() name = obj.getName() or "" end)
                 local pos = obj.getPosition()
+
                 if isInsideBounds(pos, bounds) then
                     local rot = obj.getRotation()
+
+                    -- ── Determine object type ──────────────────────────
+                    -- Priority: BCBtype script tag > name-based objective
+                    -- detection > everything else = unit.
+                    local objType = "unit"
+                    local isTerrain = isBCBTerrain(obj)
+                    if isTerrain then
+                        objType = "terrain"
+                    else
+                        -- Fallback name-based terrain check for any pieces
+                        -- that might lack BCBtype (shouldn't happen in Hutber
+                        -- but defensive).
+                        if obj.getLock() then
+                            local n = name:lower()
+                            local terrainWords = {
+                                'ruin','ruins','wall','barricade','rubble',
+                                'crater','bunker','fence','hedge','forest',
+                                'woods','building','structure','tower',
+                            }
+                            for _, w in ipairs(terrainWords) do
+                                if n:find(w) then
+                                    isTerrain = true
+                                    objType = "terrain"
+                                    break
+                                end
+                            end
+                        end
+                        -- Objective token detection (name = "Objective")
+                        if not isTerrain then
+                            local nl = name:lower()
+                            if nl:find("^objective") then
+                                objType = "objective"
+                            end
+                        end
+                    end
+
+                    -- ── Size capture ───────────────────────────────────
+                    -- For terrain: use getScale() — this is the exact floor
+                    -- footprint in TTS-inches, not the inflated mesh AABB.
+                    -- For units/objectives: keep getBounds() which gives the
+                    -- physical token diameter (useful for objectives at ~7.5").
                     local objSize = { x = 1, z = 1 }
-                    pcall(function()
-                        local b = obj.getBounds()
-                        objSize = {
-                            x = math.floor(b.size.x * 100 + 0.5) / 100,
-                            z = math.floor(b.size.z * 100 + 0.5) / 100,
-                        }
-                    end)
-                    table.insert(result, {
+                    if isTerrain then
+                        pcall(function()
+                            local s = obj.getScale()
+                            objSize = {
+                                x = rnd(s.x),
+                                z = rnd(s.z),
+                            }
+                        end)
+                    else
+                        pcall(function()
+                            local b = obj.getBounds()
+                            objSize = {
+                                x = rnd(b.size.x),
+                                z = rnd(b.size.z),
+                            }
+                        end)
+                    end
+
+                    -- ── Child floor-plates (terrain only) ─────────────
+                    -- Only Custom_Model roots need this — BlockSquare roots
+                    -- already encode the full footprint in their own scale.
+                    local children = nil
+                    if isTerrain and obj.name == "Custom_Model" then
+                        local c = getTerrainChildren(obj)
+                        if #c > 0 then children = c end
+                    end
+
+                    local entry = {
                         guid        = obj.getGUID(),
                         name        = name,
                         tag         = obj.tag,
-                        position    = { x = math.floor(pos.x * 100 + 0.5) / 100,
-                                        z = math.floor(pos.z * 100 + 0.5) / 100 },
-                        rotation_y  = math.floor(rot.y * 10 + 0.5) / 10,
+                        type        = objType,
+                        position    = { x = rnd(pos.x), z = rnd(pos.z) },
+                        rotation_y  = rnd(rot.y, 1),
                         size        = objSize,
                         locked      = obj.getLock(),
                         description = obj.getDescription(),
-                    })
+                    }
+                    if children then entry.children = children end
+
+                    table.insert(result, entry)
                 end
             end
         end
@@ -232,11 +371,11 @@ local function takeSnapshot(reason)
             reason         = reason,
             timestamp      = timestamp,
             snapshot_index = _snapshot_count,
-            mod_name       = "GameStateSnapshot v1.0",
+            mod_name       = "GameStateSnapshot v1.1",
         },
         game = {
-            round        = round,  -- requires physical counter to be clicked
-            current_turn = getStartMenuVar("currentTurn"),  -- always accurate
+            round        = round,
+            current_turn = getStartMenuVar("currentTurn"),
             first_player = getStartMenuVar("first"),
             game_mode    = getStartMenuVar("gameMode"),
             singles_mode = getStartMenuVar("singlesMode"),
@@ -294,7 +433,6 @@ local function takeSnapshot(reason)
         _session_id or "nosession", _snapshot_count)
     local json_str = serialize(state)
 
-    -- Capture locals now; _snapshot_count may increment before callback fires.
     local snap_num    = _snapshot_count
     local snap_reason = reason
     local snap_round  = round
@@ -328,7 +466,7 @@ local function takeSnapshot(reason)
 end
 
 -- ----------------------------------------------------------------
--- Periodic snapshot timer (uses Wait.time, works on object scripts)
+-- Periodic snapshot timer
 -- ----------------------------------------------------------------
 local function startPeriodicSnapshots()
     if _snapshot_timer then
@@ -338,15 +476,13 @@ local function startPeriodicSnapshots()
         if _game_started then
             takeSnapshot("periodic_1min")
         end
-    end, SNAPSHOT_INTERVAL, -1)  -- -1 = repeat forever
+    end, SNAPSHOT_INTERVAL, -1)
     printToAll("[GameStateSnapshot] Periodic snapshots every 1 min.",
         {0.6, 0.8, 1})
 end
 
 -- ----------------------------------------------------------------
--- Game-start detection via polling (works on object scripts)
--- Polls every POLL_INTERVAL seconds until inGame flips to true
--- on the Hutber startMenu object (GUID 738804).
+-- Game-start detection via polling
 -- ----------------------------------------------------------------
 local function onGameStarted()
     if _game_started then return end
@@ -386,8 +522,7 @@ local function startPolling()
 end
 
 -- ----------------------------------------------------------------
--- Cleanup: fires when the object is destroyed or table unloads
--- (including returning to main menu from an additive load session)
+-- Cleanup
 -- ----------------------------------------------------------------
 function onDestroy()
     if _snapshot_timer then Wait.stop(_snapshot_timer) _snapshot_timer = nil end
@@ -408,7 +543,6 @@ function onLoad()
     printToAll("[GameStateSnapshot] Loaded. Snapshots → " .. SERVER_URL,
         {0.7, 0.7, 0.7})
 
-    -- Verify SnapshotBot.exe is reachable before the game starts.
     local healthURL = SERVER_URL:gsub("/snapshot$", "/health")
     WebRequest.get(healthURL, function(req)
         if req.is_error or req.response_code ~= 200 then
@@ -418,7 +552,6 @@ function onLoad()
         end
     end)
 
-    -- Check immediately in case Hutber was already loaded before us
     local startMenu = getObjectFromGUID(START_MENU_GUID)
     if startMenu then
         _hutber_detected = true

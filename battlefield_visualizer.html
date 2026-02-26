@@ -522,7 +522,8 @@ let snapshots = [];
 let currentIdx = 0;
 let highlightedUnit = null;
 let playTimer = null;
-let globalBounds = null; // locked bounds across all snapshots for stable view
+let globalBounds  = null;  // locked bounds across all snapshots for stable view
+let globalMatRect = null;  // exact 60×44" board rect in TTS-inch units
 const BACKGROUND_TAGS = new Set(['Board', 'Tile']); // non-renderable background objects
 
 // Canvas
@@ -746,7 +747,9 @@ function renderAll() {
 // near 180 = red. But we don't have reliable team data, so we use
 // name-based heuristics and position (left=blue, right=red relative to midpoint).
 function guessTeam(obj, bounds) {
-  const mid = (bounds.minX + bounds.maxX) / 2;
+  const mid = globalMatRect
+    ? (globalMatRect.minX + globalMatRect.maxX) / 2
+    : (bounds.minX + bounds.maxX) / 2;
   if (!bounds || bounds.minX === bounds.maxX) return 'neutral';
   return obj.position.x < mid ? 'blue' : 'red';
 }
@@ -771,17 +774,32 @@ function stripBBCode(s) {
   return (s || '').replace(/\[[^\]]*\]/g, '').trim();
 }
 
+// "[00ff16]4/4[-] Wraith w/ claws and particle caster" → "Wraith"
+// "[00ff16]16/16[-] C'tan Shard of the Void Dragon"   → "C'tan Shard of the Void Dragon"
+function extractUnitName(raw) {
+  let s = stripBBCode(raw);
+  s = s.replace(/^\d+\/\d+\s+/, ''); // strip "4/4 " HP prefix
+  s = s.replace(/\s+w\/.*$/i, '');    // strip " w/ loadout" suffix
+  return s.trim();
+}
+
 function computeGlobalBounds(snaps) {
-  // Use the Board object's actual size for accurate, stable bounds
   for (const snap of snaps) {
     const board = (snap.battlefield_objects || []).find(o => o.tag === 'Board');
     if (board && board.size) {
-      const hw = board.size.x / 2, hh = board.size.z / 2, pad = 3;
-      return { minX: board.position.x - hw - pad, maxX: board.position.x + hw + pad,
-               minZ: board.position.z - hh - pad, maxZ: board.position.z + hh + pad };
+      const hw = board.size.x / 2, hh = board.size.z / 2;
+      const pad = 2;
+      globalMatRect = {
+        minX: board.position.x - hw, maxX: board.position.x + hw,
+        minZ: board.position.z - hh, maxZ: board.position.z + hh,
+      };
+      return {
+        minX: board.position.x - hw - pad, maxX: board.position.x + hw + pad,
+        minZ: board.position.z - hh - pad, maxZ: board.position.z + hh + pad,
+      };
     }
   }
-  // Fallback: compute from non-background objects
+  globalMatRect = null;
   const allObjs = snaps.flatMap(s => (s.battlefield_objects || []).filter(o => !BACKGROUND_TAGS.has(o.tag)));
   return getBounds(allObjs);
 }
@@ -797,7 +815,15 @@ function drawMap(snap) {
   canvas.width = W;
   canvas.height = H;
 
-  const objs = (snap.battlefield_objects || []).filter(o => !BACKGROUND_TAGS.has(o.tag));
+  const rawObjs = (snap.battlefield_objects || []).filter(o => !BACKGROUND_TAGS.has(o.tag));
+
+  // Deduplicate: skip objects whose centre is within 0.5" of a same-named earlier object.
+  // (v1.0 snapshots may include duplicate overlapping terrain shells.)
+  const objs = rawObjs.filter((o, i) => !rawObjs.slice(0, i).some(prev =>
+    Math.abs(prev.position.x - o.position.x) < 0.5 &&
+    Math.abs(prev.position.z - o.position.z) < 0.5 &&
+    prev.name === o.name
+  ));
   // Use stable global bounds so map doesn't jump between snapshots
   const bounds = globalBounds || getBounds(objs);
 
@@ -845,23 +871,46 @@ function drawMap(snap) {
   ctx.fillStyle = 'rgba(34,85,204,0.045)';
   ctx.fillRect(offX, offY, px(midX) - offX, CH);
 
-  // Border
-  ctx.strokeStyle = 'rgba(80,120,90,0.3)';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(offX, offY, CW, CH);
+  // Mat border — exact 60×44" when Board data is available
+  const mat = globalMatRect;
+  const matX1 = mat ? px(mat.minX) : offX;
+  const matZ1 = mat ? pz(mat.minZ) : offY;
+  const matX2 = mat ? px(mat.maxX) : offX + CW;
+  const matZ2 = mat ? pz(mat.maxZ) : offY + CH;
+  const matW  = matX2 - matX1;
+  const matH  = matZ2 - matZ1;
+
+  // Real 40K deployment zones: 9" strips along each long edge
+  const deployDepth = 9 * scale;
+  ctx.fillStyle = 'rgba(204,34,51,0.055)';
+  ctx.fillRect(matX2 - deployDepth, matZ1, deployDepth, matH);
+  ctx.fillStyle = 'rgba(34,85,204,0.055)';
+  ctx.fillRect(matX1, matZ1, deployDepth, matH);
+
+  ctx.strokeStyle = 'rgba(100,160,110,0.55)';
+  ctx.lineWidth = 2.5;
+  ctx.strokeRect(matX1, matZ1, matW, matH);
 
   // Unit radius relative to map scale
   const unitR = Math.max(8, Math.min(22, scale * 1.2));
   const fontSize = Math.max(7, Math.min(11, unitR * 0.85));
 
-  // Separate layers
-  const terrain    = objs.filter(o => isTerrainObj(o));
-  const objectives = objs.filter(o => isObjectiveObj(o));
-  const units      = objs.filter(o => !isTerrainObj(o) && !isObjectiveObj(o));
+  // Separate layers — use explicit type field (v1.1+) with fallback for v1.0 snapshots
+  const terrain    = objs.filter(o => o.type === 'terrain'   || (!o.type && isTerrainObj(o)));
+  const objectives = objs.filter(o => o.type === 'objective' || (!o.type && isObjectiveObj(o)));
+  const units      = objs.filter(o => o.type === 'unit'      || (!o.type && !isTerrainObj(o) && !isObjectiveObj(o)));
 
   // Layer 1: terrain
   terrain.forEach(obj => {
-    drawTerrain(px(obj.position.x), pz(obj.position.z), obj.name, obj.rotation_y ?? obj.rotation?.y ?? 0, unitR, fontSize, obj.size, scale);
+    drawTerrain(px(obj.position.x), pz(obj.position.z), obj.name,
+                obj.rotation_y ?? 0, unitR, fontSize, obj.size, scale, obj.tag, false);
+    // v1.1: draw child floor-plates for L/V shaped Custom_Model terrain
+    if (obj.children) {
+      obj.children.forEach(child => {
+        drawTerrain(px(child.position.x), pz(child.position.z), '',
+                    child.rotation_y ?? 0, unitR, fontSize, child.size, scale, 'BlockSquare', true);
+      });
+    }
   });
 
   // Layer 2: objectives
@@ -896,21 +945,23 @@ function isObjectiveObj(obj) {
   return n.includes('objective') || n.includes('primary objective');
 }
 
-function drawTerrain(x, z, name, rotY, r, fontSize, size, scale) {
+function drawTerrain(x, z, name, rotY, r, fontSize, size, scale, tag, isChild) {
   ctx.save();
-  // Use real world size scaled to canvas pixels; fallback to default blob
+  // v1.1 snapshots: size comes from getScale() = exact floor footprint in inches.
+  // v1.0 snapshots: size comes from getBounds() = inflated AABB; apply correction.
+  // We detect v1.0 data by checking for implausibly large sizes relative to known
+  // Hutber ruin dimensions (max legitimate ruin is ~13" on any axis).
+  const v10correction = (size && (size.x > 13.5 || size.z > 13.5)) ? 0.72 : 1.0;
   const sc = scale || (r / 1.2);
-  const w = size ? size.x * sc : r * 2.8;
-  const h = size ? size.z * sc : r * 2.0;
-  ctx.translate(x, z);
-  ctx.rotate(rotY * Math.PI / 180);
+  const w = (size ? size.x * v10correction : r * 2.8) * sc;
+  const h = (size ? size.z * v10correction : r * 2.0) * sc;
 
-  // Filled rect with hatching
-  ctx.fillStyle = 'rgba(60,50,35,0.75)';
+  // TTS getBounds/getScale size is world-space axis-aligned — do NOT apply canvas rotation.
+  ctx.fillStyle   = isChild ? 'rgba(70,58,40,0.55)' : 'rgba(60,50,35,0.75)';
   ctx.strokeStyle = 'rgba(140,110,60,0.7)';
-  ctx.lineWidth = 1.2;
+  ctx.lineWidth = isChild ? 0.8 : 1.2;
   ctx.beginPath();
-  ctx.rect(-w/2, -h/2, w, h);
+  ctx.rect(x - w/2, z - h/2, w, h);
   ctx.fill();
   ctx.stroke();
 
@@ -919,23 +970,26 @@ function drawTerrain(x, z, name, rotY, r, fontSize, size, scale) {
   ctx.lineWidth = 0.8;
   ctx.save();
   ctx.clip();
-  for (let i = -w; i < w * 2; i += r * 0.6) {
-    ctx.beginPath(); ctx.moveTo(i - h, -h); ctx.lineTo(i + h, h); ctx.stroke();
+  for (let i = x - w; i < x + w * 2; i += Math.max(6, r * 0.6)) {
+    ctx.beginPath(); ctx.moveTo(i - h, z - h); ctx.lineTo(i + h, z + h); ctx.stroke();
   }
   ctx.restore();
 
-  ctx.resetTransform();
-
-  // Label
-  const cleanName = stripBBCode(name);
-  const shortName = cleanName.length > 12 ? cleanName.slice(0, 10) + '…' : cleanName;
-  ctx.font = `${Math.max(6, fontSize - 1)}px "Share Tech Mono", monospace`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(0,0,0,0.6)';
-  ctx.fillText(shortName, x+1, z+1);
-  ctx.fillStyle = 'rgba(180,150,90,0.85)';
-  ctx.fillText(shortName, x, z);
+  // Label on primary piece only, not child floor-plates
+  if (!isChild && name) {
+    const clean = stripBBCode(name);
+    // Show e.g. "Ruin (9\")" — strip [sup]...[/sup] noise
+    const label = (clean.match(/^[^[]+/) || [clean])[0].trim().slice(0, 12);
+    if (label) {
+      ctx.font = `${Math.max(6, fontSize - 1)}px "Share Tech Mono", monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillText(label, x+1, z+1);
+      ctx.fillStyle = 'rgba(180,150,90,0.85)';
+      ctx.fillText(label, x, z);
+    }
+  }
 
   ctx.restore();
 }
@@ -1030,7 +1084,7 @@ function drawUnit(x, z, name, team, r, fontSize, tag, highlighted) {
   ctx.globalAlpha = 1;
 
   // Label below
-  const cleanName = stripBBCode(name);
+  const cleanName = extractUnitName(name);
   const shortName = cleanName.length > 16 ? cleanName.slice(0, 14) + '…' : cleanName;
   ctx.font = `bold ${fontSize}px "Rajdhani", sans-serif`;
   ctx.textAlign = 'center';
@@ -1068,7 +1122,7 @@ canvas.addEventListener('mousemove', e => {
     tip.style.left = (e.clientX + 14) + 'px';
     tip.style.top  = (e.clientY - 10) + 'px';
     tip.innerHTML = `
-      <div class="tip-name">${stripBBCode(hit.name) || '(unnamed)'}</div>
+      <div class="tip-name">${extractUnitName(hit.name) || '(unnamed)'}</div>
       GUID: ${hit.guid}<br>
       Tag: ${hit.tag || '–'}<br>
       Team: ${team}<br>
@@ -1108,7 +1162,9 @@ canvas.addEventListener('click', e => {
 // ── Unit list ──────────────────────────────────────────────────────
 function buildUnitList(snap) {
   const filteredObjs = (snap.battlefield_objects || []).filter(o => !BACKGROUND_TAGS.has(o.tag));
-  const units = filteredObjs.filter(o => !isTerrainObj(o) && !isObjectiveObj(o));
+  const units = filteredObjs.filter(o =>
+    o.type === 'unit' || (!o.type && !isTerrainObj(o) && !isObjectiveObj(o))
+  );
   document.getElementById('unitCount').textContent = `(${units.length})`;
 
   const bounds = globalBounds || getBounds(filteredObjs);
@@ -1117,7 +1173,7 @@ function buildUnitList(snap) {
 
   units.forEach(obj => {
     const team = guessTeam(obj, { minX: bounds.minX, maxX: bounds.maxX });
-    const name = stripBBCode(obj.name) || '(unnamed)';
+    const name = extractUnitName(obj.name) || '(unnamed)';
     const div = document.createElement('div');
     div.className = 'unit-item' + (obj.guid === highlightedUnit ? ' highlighted' : '');
     div.dataset.guid = obj.guid;
