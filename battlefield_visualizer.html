@@ -523,6 +523,7 @@ let currentIdx = 0;
 let highlightedUnit = null;
 let playTimer = null;
 let globalBounds = null; // locked bounds across all snapshots for stable view
+const BACKGROUND_TAGS = new Set(['Board', 'Tile']); // non-renderable background objects
 
 // Canvas
 const canvas = document.getElementById('mapCanvas');
@@ -556,9 +557,8 @@ async function loadFiles(files) {
   snapshots.sort((a, b) => (a.meta?.snapshot_index || 0) - (b.meta?.snapshot_index || 0));
   currentIdx = snapshots.length - valid.length;
 
-  // Compute stable global bounds across ALL snapshots
-  const allObjs = snapshots.flatMap(s => s.battlefield_objects || []);
-  globalBounds = getBounds(allObjs);
+  // Compute stable global bounds, preferring Board object's actual extent
+  globalBounds = computeGlobalBounds(snapshots);
 
   setupSlider();
   renderAll();
@@ -616,12 +616,22 @@ function updateSliderFill() {
   document.getElementById('sliderRight').textContent = `${currentIdx+1}/${snapshots.length}`;
 }
 
+function parseTimestamp(ts) {
+  if (!ts) return null;
+  const m = ts.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5], +m[6]).getTime();
+}
+
 function formatTime(idx) {
-  // Show elapsed time assuming 5 min intervals
-  const mins = idx * 5;
-  const h = Math.floor(mins / 60);
-  const m = mins % 60;
-  return h > 0 ? `${h}h${String(m).padStart(2,'0')}` : `${m}:00`;
+  const firstTs = parseTimestamp(snapshots[0]?.meta?.timestamp);
+  const currTs  = parseTimestamp(snapshots[idx]?.meta?.timestamp);
+  if (firstTs != null && currTs != null) {
+    const elapsed = Math.round((currTs - firstTs) / 60000);
+    const h = Math.floor(elapsed / 60), m = elapsed % 60;
+    return h > 0 ? `${h}h${String(m).padStart(2,'0')}` : `${m}:00`;
+  }
+  return `#${idx + 1}`;
 }
 
 // ── Slider interaction ─────────────────────────────────────────────
@@ -757,6 +767,25 @@ function getBounds(objects) {
   return { minX: minX - px, maxX: maxX + px, minZ: minZ - pz, maxZ: maxZ + pz };
 }
 
+function stripBBCode(s) {
+  return (s || '').replace(/\[[^\]]*\]/g, '').trim();
+}
+
+function computeGlobalBounds(snaps) {
+  // Use the Board object's actual size for accurate, stable bounds
+  for (const snap of snaps) {
+    const board = (snap.battlefield_objects || []).find(o => o.tag === 'Board');
+    if (board && board.size) {
+      const hw = board.size.x / 2, hh = board.size.z / 2, pad = 3;
+      return { minX: board.position.x - hw - pad, maxX: board.position.x + hw + pad,
+               minZ: board.position.z - hh - pad, maxZ: board.position.z + hh + pad };
+    }
+  }
+  // Fallback: compute from non-background objects
+  const allObjs = snaps.flatMap(s => (s.battlefield_objects || []).filter(o => !BACKGROUND_TAGS.has(o.tag)));
+  return getBounds(allObjs);
+}
+
 // ── Draw ──────────────────────────────────────────────────────────
 function drawMap(snap) {
   dropZone.style.display = 'none';
@@ -768,7 +797,7 @@ function drawMap(snap) {
   canvas.width = W;
   canvas.height = H;
 
-  const objs = snap.battlefield_objects || [];
+  const objs = (snap.battlefield_objects || []).filter(o => !BACKGROUND_TAGS.has(o.tag));
   // Use stable global bounds so map doesn't jump between snapshots
   const bounds = globalBounds || getBounds(objs);
 
@@ -832,7 +861,7 @@ function drawMap(snap) {
 
   // Layer 1: terrain
   terrain.forEach(obj => {
-    drawTerrain(px(obj.position.x), pz(obj.position.z), obj.name, obj.rotation_y ?? obj.rotation?.y ?? 0, unitR, fontSize, obj.size);
+    drawTerrain(px(obj.position.x), pz(obj.position.z), obj.name, obj.rotation_y ?? obj.rotation?.y ?? 0, unitR, fontSize, obj.size, scale);
   });
 
   // Layer 2: objectives
@@ -867,11 +896,12 @@ function isObjectiveObj(obj) {
   return n.includes('objective') || n.includes('primary objective');
 }
 
-function drawTerrain(x, z, name, rotY, r, fontSize, size) {
+function drawTerrain(x, z, name, rotY, r, fontSize, size, scale) {
   ctx.save();
-  // Use real world size if available, scaled to canvas; fallback to default blob
-  const w = size ? size.x * (r / 1.5) : r * 2.8;
-  const h = size ? size.z * (r / 1.5) : r * 2.0;
+  // Use real world size scaled to canvas pixels; fallback to default blob
+  const sc = scale || (r / 1.2);
+  const w = size ? size.x * sc : r * 2.8;
+  const h = size ? size.z * sc : r * 2.0;
   ctx.translate(x, z);
   ctx.rotate(rotY * Math.PI / 180);
 
@@ -897,7 +927,8 @@ function drawTerrain(x, z, name, rotY, r, fontSize, size) {
   ctx.resetTransform();
 
   // Label
-  const shortName = name.length > 12 ? name.slice(0, 10) + '…' : name;
+  const cleanName = stripBBCode(name);
+  const shortName = cleanName.length > 12 ? cleanName.slice(0, 10) + '…' : cleanName;
   ctx.font = `${Math.max(6, fontSize - 1)}px "Share Tech Mono", monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -999,7 +1030,8 @@ function drawUnit(x, z, name, team, r, fontSize, tag, highlighted) {
   ctx.globalAlpha = 1;
 
   // Label below
-  const shortName = name.length > 16 ? name.slice(0, 14) + '…' : name;
+  const cleanName = stripBBCode(name);
+  const shortName = cleanName.length > 16 ? cleanName.slice(0, 14) + '…' : cleanName;
   ctx.font = `bold ${fontSize}px "Rajdhani", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
@@ -1036,7 +1068,7 @@ canvas.addEventListener('mousemove', e => {
     tip.style.left = (e.clientX + 14) + 'px';
     tip.style.top  = (e.clientY - 10) + 'px';
     tip.innerHTML = `
-      <div class="tip-name">${hit.name || '(unnamed)'}</div>
+      <div class="tip-name">${stripBBCode(hit.name) || '(unnamed)'}</div>
       GUID: ${hit.guid}<br>
       Tag: ${hit.tag || '–'}<br>
       Team: ${team}<br>
@@ -1075,17 +1107,17 @@ canvas.addEventListener('click', e => {
 
 // ── Unit list ──────────────────────────────────────────────────────
 function buildUnitList(snap) {
-  const allObjs = snap.battlefield_objects || [];
-  const units = allObjs.filter(o => !isTerrainObj(o) && !isObjectiveObj(o));
+  const filteredObjs = (snap.battlefield_objects || []).filter(o => !BACKGROUND_TAGS.has(o.tag));
+  const units = filteredObjs.filter(o => !isTerrainObj(o) && !isObjectiveObj(o));
   document.getElementById('unitCount').textContent = `(${units.length})`;
 
-  const bounds = getBounds(allObjs);
+  const bounds = globalBounds || getBounds(filteredObjs);
   const list = document.getElementById('unitList');
   list.innerHTML = '';
 
   units.forEach(obj => {
     const team = guessTeam(obj, { minX: bounds.minX, maxX: bounds.maxX });
-    const name = obj.name || '(unnamed)';
+    const name = stripBBCode(obj.name) || '(unnamed)';
     const div = document.createElement('div');
     div.className = 'unit-item' + (obj.guid === highlightedUnit ? ' highlighted' : '');
     div.dataset.guid = obj.guid;

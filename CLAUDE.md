@@ -2,10 +2,11 @@
 
 ## What This Project Does
 
-A two-part Tabletop Simulator (TTS) tool for recording and replaying Warhammer 40K games played on the **Hutber 40k Competitive 10e Map Base** mod.
+A three-part Tabletop Simulator (TTS) tool for recording and replaying Warhammer 40K games played on the **Hutber 40k Competitive 10e Map Base** mod.
 
-1. **`GameStateSnapshot.ttslua`** — TTS Lua script that runs *inside* TTS as an additive mod, periodically capturing game state to JSON files on disk.
-2. **`battlefield_visualizer.html`** — Standalone browser app that loads those JSON snapshots and renders an animated top-down battlefield replay.
+1. **`GameStateSnapshot.ttslua`** — TTS Lua script that runs *inside* TTS as an additive mod, periodically capturing game state and POSTing it via HTTP to the local server.
+2. **`snapshot_server.py`** — Local Windows tray app (compiled to `SnapshotBot.exe`) that receives snapshots from TTS and writes them as JSON files to disk.
+3. **`battlefield_visualizer.html`** — Standalone browser app that loads those JSON snapshots and renders an animated top-down battlefield replay.
 
 ---
 
@@ -14,17 +15,34 @@ A two-part Tabletop Simulator (TTS) tool for recording and replaying Warhammer 4
 | File | Language | Purpose |
 |------|----------|---------|
 | `GameStateSnapshot.ttslua` | TTS Lua | In-game snapshot recorder |
+| `snapshot_server.py` | Python | Local HTTP server / system tray app |
+| `build.bat` | Batch | One-time script to compile `snapshot_server.py` → `SnapshotBot.exe` |
+| `requirements.txt` | pip | Python dependencies: `pystray`, `pillow`, `pyinstaller` |
 | `battlefield_visualizer.html` | HTML/CSS/JS (single file) | Offline snapshot viewer/player |
+
+---
+
+## Architecture
+
+TTS's Lua sandbox (MoonSharp) strips the entire `io` library — `io.open` is nil and cannot be used for file I/O from any script. The workaround is:
+
+```
+GameStateSnapshot.ttslua  →  WebRequest.custom() HTTP POST  →  SnapshotBot.exe  →  .json file on disk
+                               localhost:39999/snapshot
+```
+
+`SnapshotBot.exe` must be running before TTS is launched. It shows a green camera icon in the Windows system tray. Right-click → **Open Snapshot Folder** or **Quit**.
 
 ---
 
 ## GameStateSnapshot.ttslua
 
 ### How It Works
-- **Install**: Additively loaded on top of the Hutber mod. The script lives on an invisible TTS object — no changes to Hutber's scripts needed.
+- **Install**: Additively loaded on top of the Hutber mod. The script lives on a TTS object — no changes to Hutber's scripts needed.
+- **On load**: Fires a GET to `localhost:39999/health` and prints `SnapshotBot.exe connected OK.` or a warning to TTS chat.
 - **Start detection**: Polls the `startMenu` object (GUID `738804`) every `POLL_INTERVAL` (2s) waiting for `inGame == true`.
-- **On game start**: Creates a timestamped session subfolder, takes an immediate `game_start` snapshot, starts a repeating `periodic_5min` timer.
-- **Snapshots**: JSON files written to `SNAPSHOT_FOLDER` (currently hardcoded to `C:/Users/User/Documents/coding_projects/TTS snapshot/`).
+- **On game start**: Takes an immediate `game_start` snapshot, starts a repeating `periodic_1min` timer.
+- **Snapshots**: Serialized with a pure-Lua `serialize()` function (no `JSON` global — it's nil in object scripts), then POSTed to `SERVER_URL` with the filename in the `X-Filename` header.
 - **Cleanup**: `onDestroy()` stops all timers when the object is destroyed or the table unloads.
 
 ### Snapshot JSON Schema
@@ -48,13 +66,20 @@ A two-part Tabletop Simulator (TTS) tool for recording and replaying Warhammer 4
 ```
 
 ### Key Constants / Config
-- `SNAPSHOT_INTERVAL = 300` — seconds between periodic snapshots (5 min)
+- `SNAPSHOT_INTERVAL = 60` — seconds between periodic snapshots (1 min)
 - `POLL_INTERVAL = 2` — game-start poll frequency
 - `START_MENU_GUID = "738804"` — GUID of Hutber's start menu object
-- `SNAPSHOT_FOLDER` — output path (hardcoded, must match local machine)
+- `SERVER_URL = "http://localhost:39999/snapshot"` — SnapshotBot.exe endpoint
 
 ### Object Filtering (battlefield_objects)
 Only objects **inside the mat bounds** are captured. Excluded by tag: `ScriptingZone`, `Fog`, `FogOfWar`, `Zone`, `Hand`. Excluded by GM Notes: `deployZone`, `deployZone9`, `objective`, `areaDeny`, `quarter`, `mat_GUID`.
+
+### WebRequest.custom() parameter order
+TTS expects headers **before** the callback:
+```lua
+WebRequest.custom(url, method, download, data, headers_table, callback_function)
+```
+Passing callback before headers throws: `cannot convert a function to a clr type Dictionary<string,string>`.
 
 ### Hutber Mod Integration
 Reads data by GUID via `Global.getVar()`:
@@ -64,6 +89,24 @@ Reads data by GUID via `Global.getVar()`:
 - `scoresheet_GUID` — calls `getMatchSummary()` on the scoresheet object
 - `deploymentCardZone_GUID`, `primaryCardZone_GUID`, `secondary*CardZone_GUID` — mission card zones
 - `mat_GUID` — the battle mat for bounds calculation
+
+---
+
+## snapshot_server.py / SnapshotBot.exe
+
+- Listens on `localhost:39999` only (not network-accessible)
+- `POST /snapshot` — reads `X-Filename` header, writes body to `SAVE_DIR`
+- `GET /health` — returns 200 OK (used by Lua health check on load)
+- `SAVE_DIR = ~/Documents/TTS Snapshots` (resolves to current user's home, works on any machine)
+- Tray icon tooltip updates with snapshot count after each save
+- Compiled with PyInstaller `--onefile --windowed` → fully self-contained, no Python needed to run
+
+### Building
+Run `build.bat` once. Requires Python installed with `py` launcher on PATH (Microsoft Store Python works). Output: `dist\SnapshotBot.exe`.
+
+### Sharing
+- The `.exe` is self-contained — friend does not need Python
+- Windows SmartScreen will show "Windows protected your PC" on first run — click **More info → Run anyway**
 
 ---
 
@@ -100,8 +143,7 @@ Loads from Google Fonts: `Rajdhani` (UI) and `Share Tech Mono` (monospace labels
 
 ## Development Notes
 
-- **No build system** — both files are standalone. Edit and reload.
-- **TTS Lua dialect** — uses `Wait.time()`, `JSON.encode_pretty()`, `printToAll()`, `getObjectFromGUID()`, and other TTS globals. Standard Lua I/O (`io.open`) works in TTS desktop.
-- **Path separator** — TTS on Windows uses forward slashes in `io.open` paths.
-- `SNAPSHOT_FOLDER` in the `.ttslua` file is machine-specific and must be updated when deploying to a different machine.
-- The snapshot folder must exist before TTS tries to write; the session subfolder is created at game start via a `.session` marker file.
+- **No build system** — all files are standalone. Edit and reload.
+- **TTS Lua sandbox** — MoonSharp strips `io`, `os.execute`, and `JSON` globals. File I/O must go via `WebRequest` to a local server. `JSON` global is nil in object scripts (works in Global script only). Use the pure-Lua `serialize()` / `deepCopy()` functions already in the script.
+- **TTS Lua `goto`** — forbidden when jumping over local variable declarations; use nested `if` blocks instead.
+- **Cross-script tables** — `obj.call()` and `obj.getVar()` return cross-script tables; always `deepCopy()` before use.

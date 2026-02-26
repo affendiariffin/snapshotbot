@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 # Config
 # -----------------------------------------------------------------------
 PORT      = 39999
-SAVE_DIR  = r"C:\Users\User\Documents\coding_projects\TTS snapshot"
+SAVE_DIR  = os.path.join(os.path.expanduser("~"), "Documents", "TTS Snapshots")
 
 # -----------------------------------------------------------------------
 # Globals
