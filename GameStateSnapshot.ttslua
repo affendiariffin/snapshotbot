@@ -303,6 +303,7 @@ local function takeSnapshot(reason)
 
     WebRequest.custom(
         SERVER_URL, "POST", false, json_str,
+        {["X-Filename"] = filename, ["Content-Type"] = "application/json"},
         function(req)
             if req.is_error then
                 local msg = req.error or "unknown error"
@@ -322,8 +323,7 @@ local function takeSnapshot(reason)
                     tostring(snap_red   or "?"),
                     tostring(snap_blue  or "?")), {0.4, 1, 0.4})
             end
-        end,
-        {["X-Filename"] = filename, ["Content-Type"] = "application/json"}
+        end
     )
 end
 
