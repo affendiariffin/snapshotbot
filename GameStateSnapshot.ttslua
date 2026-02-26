@@ -13,8 +13,8 @@
 local SNAPSHOT_INTERVAL  = 60    -- periodic snapshot every 1 minute
 local POLL_INTERVAL      = 2     -- how often (seconds) to check if game started
 
--- Auto-detect output folder next to TTS's own data directory.
-local SNAPSHOT_FOLDER = "C:/Users/User/Documents/My Games/Tabletop Simulator/Snapshots/"
+-- SnapshotBot.exe must be running on this port before you start TTS.
+local SERVER_URL = "http://localhost:39999/snapshot"
 
 -- ----------------------------------------------------------------
 -- State
@@ -290,28 +290,41 @@ local function takeSnapshot(reason)
         battlefield_objects = getObjectsOnMat(),
     }
 
-    local filename = SNAPSHOT_FOLDER ..
-        string.format("%s_snap%03d.json", _session_id or "nosession", _snapshot_count)
+    local filename = string.format("%s_snap%03d.json",
+        _session_id or "nosession", _snapshot_count)
     local json_str = serialize(state)
 
-    local success, err = pcall(function()
-        local file = io.open(filename, "w")
-        if file then file:write(json_str) file:close()
-        else error("io.open returned nil for: " .. filename) end
-    end)
+    -- Capture locals now; _snapshot_count may increment before callback fires.
+    local snap_num    = _snapshot_count
+    local snap_reason = reason
+    local snap_round  = round
+    local snap_red    = redTotal
+    local snap_blue   = blueTotal
 
-    if success then
-        printToAll(string.format(
-            "[GameStateSnapshot] #%d (%s) R%s | Red %s - Blue %s",
-            _snapshot_count, reason,
-            tostring(round or "?"),
-            tostring(redTotal or "?"),
-            tostring(blueTotal or "?")), {0.4, 1, 0.4})
-    else
-        printToAll(string.format(
-            "[GameStateSnapshot] ERROR #%d: %s",
-            _snapshot_count, tostring(err)), {1, 0.3, 0.3})
-    end
+    WebRequest.custom(
+        SERVER_URL, "POST", false, json_str,
+        function(req)
+            if req.is_error then
+                local msg = req.error or "unknown error"
+                if msg:find("[Cc]onnect") or msg:find("[Rr]efus") then
+                    msg = "SnapshotBot.exe not running — start it before playing"
+                end
+                printToAll(string.format("[GameStateSnapshot] ERROR #%d: %s",
+                    snap_num, msg), {1, 0.3, 0.3})
+            elseif req.response_code ~= 200 then
+                printToAll(string.format("[GameStateSnapshot] ERROR #%d: HTTP %d",
+                    snap_num, req.response_code), {1, 0.3, 0.3})
+            else
+                printToAll(string.format(
+                    "[GameStateSnapshot] #%d (%s) R%s | Red %s - Blue %s",
+                    snap_num, snap_reason,
+                    tostring(snap_round or "?"),
+                    tostring(snap_red   or "?"),
+                    tostring(snap_blue  or "?")), {0.4, 1, 0.4})
+            end
+        end,
+        {["X-Filename"] = filename, ["Content-Type"] = "application/json"}
+    )
 end
 
 -- ----------------------------------------------------------------
@@ -347,7 +360,7 @@ local function onGameStarted()
     _session_id = getTimestamp()
     printToAll("[GameStateSnapshot] Game started - taking initial snapshot.",
         {1, 0.9, 0.3})
-    printToAll("[GameStateSnapshot] Saving to: " .. SNAPSHOT_FOLDER,
+    printToAll("[GameStateSnapshot] Sending snapshots to: " .. SERVER_URL,
         {0.7, 0.7, 0.7})
     takeSnapshot("game_start")
     startPeriodicSnapshots()
@@ -392,8 +405,18 @@ function onLoad()
     _session_id      = nil
     _hutber_detected = false
 
-    printToAll("[GameStateSnapshot] Loaded. Snapshots → " .. SNAPSHOT_FOLDER,
+    printToAll("[GameStateSnapshot] Loaded. Snapshots → " .. SERVER_URL,
         {0.7, 0.7, 0.7})
+
+    -- Verify SnapshotBot.exe is reachable before the game starts.
+    local healthURL = SERVER_URL:gsub("/snapshot$", "/health")
+    WebRequest.get(healthURL, function(req)
+        if req.is_error or req.response_code ~= 200 then
+            printToAll("[GameStateSnapshot] WARNING: SnapshotBot.exe not detected — start it before playing!", {1, 0.6, 0.1})
+        else
+            printToAll("[GameStateSnapshot] SnapshotBot.exe connected OK.", {0.4, 1, 0.4})
+        end
+    end)
 
     -- Check immediately in case Hutber was already loaded before us
     local startMenu = getObjectFromGUID(START_MENU_GUID)
