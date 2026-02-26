@@ -221,7 +221,7 @@ end
 local function getTerrainChildren(obj)
     local children = {}
     pcall(function()
-        for _, child in ipairs(obj.getObjects()) do
+        for _, child in ipairs(obj.getAttachments()) do
             if child.name == "BlockSquare" then
                 local cp  = child.getPosition()
                 local cs  = child.getScale()
