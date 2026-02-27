@@ -86,13 +86,7 @@
 
   /* ── Sidebar ── */
   .sidebar {
-    width: 220px;
-    min-width: 220px;
-    background: var(--panel);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+    display: none;
   }
 
   .sidebar-section {
@@ -817,13 +811,17 @@ function drawMap(snap) {
 
   const rawObjs = (snap.battlefield_objects || []).filter(o => !BACKGROUND_TAGS.has(o.tag));
 
-  // Deduplicate: skip objects whose centre is within 0.5" of a same-named earlier object.
-  // (v1.0 snapshots may include duplicate overlapping terrain shells.)
-  const objs = rawObjs.filter((o, i) => !rawObjs.slice(0, i).some(prev =>
-    Math.abs(prev.position.x - o.position.x) < 0.5 &&
-    Math.abs(prev.position.z - o.position.z) < 0.5 &&
-    prev.name === o.name
-  ));
+  // Deduplicate overlapping terrain shells — Hutber uses inner+outer mesh pairs
+  // at identical positions. For terrain, deduplicate by position alone.
+  // For units, keep all (two models can legitimately overlap briefly).
+  const objs = rawObjs.filter((o, i) => {
+    if (o.type !== 'terrain' && !(!o.type && isTerrainObj(o))) return true;
+    return !rawObjs.slice(0, i).some(prev =>
+      (prev.type === 'terrain' || (!prev.type && isTerrainObj(prev))) &&
+      Math.abs(prev.position.x - o.position.x) < 0.5 &&
+      Math.abs(prev.position.z - o.position.z) < 0.5
+    );
+  });
   // Use stable global bounds so map doesn't jump between snapshots
   const bounds = globalBounds || getBounds(objs);
 
@@ -832,7 +830,7 @@ function drawMap(snap) {
   const scale = Math.min(W / worldW, H / worldH);
 
   function wx(x) { return (x - bounds.minX) * scale; }
-  function wz(z) { return (z - bounds.minZ) * scale; }
+  function wz(z) { return (bounds.maxZ - z) * scale; } // flip Z: TTS Z+ = up, canvas Y+ = down
 
   const CW = worldW * scale;
   const CH = worldH * scale;
@@ -874,9 +872,9 @@ function drawMap(snap) {
   // Mat border — exact 60×44" when Board data is available
   const mat = globalMatRect;
   const matX1 = mat ? px(mat.minX) : offX;
-  const matZ1 = mat ? pz(mat.minZ) : offY;
+  const matZ1 = mat ? Math.min(pz(mat.minZ), pz(mat.maxZ)) : offY;
   const matX2 = mat ? px(mat.maxX) : offX + CW;
-  const matZ2 = mat ? pz(mat.maxZ) : offY + CH;
+  const matZ2 = mat ? Math.max(pz(mat.minZ), pz(mat.maxZ)) : offY + CH;
   const matW  = matX2 - matX1;
   const matH  = matZ2 - matZ1;
 
@@ -902,20 +900,14 @@ function drawMap(snap) {
 
   // Layer 1: terrain
   terrain.forEach(obj => {
-    drawTerrain(px(obj.position.x), pz(obj.position.z), obj.name,
-                obj.rotation_y ?? 0, unitR, fontSize, obj.size, scale, obj.tag, false);
-    // v1.1: draw child floor-plates for L/V shaped Custom_Model terrain
-    if (obj.children) {
-      obj.children.forEach(child => {
-        drawTerrain(px(child.position.x), pz(child.position.z), '',
-                    child.rotation_y ?? 0, unitR, fontSize, child.size, scale, 'BlockSquare', true);
-      });
-    }
+    drawTerrain(px(obj.position.x), pz(obj.position.z), obj,
+                unitR, fontSize, scale);
   });
 
-  // Layer 2: objectives
+  // Layer 2: objectives — 192mm real diameter = 7.56" = 3.78" radius in TTS units
+  const objRadius = 3.78 * scale;
   objectives.forEach((obj, i) => {
-    drawObjective(px(obj.position.x), pz(obj.position.z), obj.name, i + 1, unitR, fontSize);
+    drawObjective(px(obj.position.x), pz(obj.position.z), obj.name, i + 1, objRadius, fontSize);
   });
 
   // Layer 3: units
@@ -945,50 +937,149 @@ function isObjectiveObj(obj) {
   return n.includes('objective') || n.includes('primary objective');
 }
 
-function drawTerrain(x, z, name, rotY, r, fontSize, size, scale, tag, isChild) {
-  ctx.save();
-  // v1.1 snapshots: size comes from getScale() = exact floor footprint in inches.
-  // v1.0 snapshots: size comes from getBounds() = inflated AABB; apply correction.
-  // We detect v1.0 data by checking for implausibly large sizes relative to known
-  // Hutber ruin dimensions (max legitimate ruin is ~13" on any axis).
-  const v10correction = (size && (size.x > 13.5 || size.z > 13.5)) ? 0.72 : 1.0;
-  const sc = scale || (r / 1.2);
-  const w = (size ? size.x * v10correction : r * 2.8) * sc;
-  const h = (size ? size.z * v10correction : r * 2.0) * sc;
+// The three Hutber terrain building blocks (width × depth in inches)
+// Complex shapes (L, V, chevron) are two blocks placed adjacently.
+const STANDARD_SIZES = [
+  { x: 12, z: 6  },
+  { x: 6,  z: 12 },
+  { x: 10, z: 5  },
+  { x: 5,  z: 10 },
+  { x: 6,  z: 4  },
+  { x: 4,  z: 6  },
+];
 
-  // TTS getBounds/getScale size is world-space axis-aligned — do NOT apply canvas rotation.
-  ctx.fillStyle   = isChild ? 'rgba(70,58,40,0.55)' : 'rgba(60,50,35,0.75)';
+function snapToStandard(wx, wz) {
+  let best = null, bestDist = Infinity;
+  for (const s of STANDARD_SIZES) {
+    const d = Math.abs(wx - s.x) + Math.abs(wz - s.z);
+    if (d < bestDist) { bestDist = d; best = s; }
+  }
+  // Only snap if reasonably close (within 2"); otherwise use raw value
+  return bestDist < 2 ? best : { x: wx, z: wz };
+}
+
+function getTerrainFootprint(obj, scale) {
+  const name = obj.name || '';
+  const size = obj.size;
+  const clean = name.replace(/\[sup\].*?\[\/sup\]/gi, '').replace(/\[[^\]]*\]/g, '').trim();
+
+  // Use footprint_rotation if provided (new v1.2 data from BlockSquare plate lookup)
+  const rotY = (obj.footprint_rotation != null) ? obj.footprint_rotation : (obj.rotation_y || 0);
+
+  let rawX, rawZ;
+  if (size && size.x >= 1 && size.z >= 1) {
+    rawX = size.x; rawZ = size.z;
+  } else {
+    // Sub-inch fallback — infer from name
+    const isBarricade = clean.toLowerCase().includes('barricade');
+    if      (clean.startsWith('Ruin (12")'))               { rawX = 12; rawZ = 6; }
+    else if (clean.startsWith('Ruin (9")') && isBarricade) { rawX = 10; rawZ = 5; }
+    else if (clean.startsWith('Ruin (9")'))                { rawX = 12; rawZ = 6; }
+    else if (clean.startsWith('Ruin (6")'))                { rawX = 10; rawZ = 5; }
+    else if (clean.startsWith('Ruin (2")'))                { rawX = 6;  rawZ = 4; }
+    else return null;
+  }
+
+  // Diagonal pieces: use canvas rotation
+  const rot = ((rotY % 360) + 360) % 360;
+  const isDiagonal = Math.min(rot % 90, 90 - rot % 90) > 20;
+  if (isDiagonal) {
+    return { x: rawX, z: rawZ, diagonal: true, rotY };
+  }
+
+  // Axis-aligned: swap axes when ~90° or ~270°
+  const swapped = (rot > 45 && rot < 135) || (rot > 225 && rot < 315);
+  return snapToStandard(swapped ? rawZ : rawX, swapped ? rawX : rawZ);
+}
+
+function drawTerrain(x, z, obj, r, fontSize, scale) {
+  const fp = getTerrainFootprint(obj, scale);
+  if (!fp) return;
+  const name = obj.name || '';
+  const clean = name.replace(/\[sup\].*?\[\/sup\]/gi, '').replace(/\[[^\]]*\]/g, '').trim();
+  const label = clean.slice(0, 10);
+  const sp = Math.max(6, r * 0.55);
+
+  ctx.save();
+
+  if (fp.diagonal) {
+    const snapped = snapToStandard(fp.x, fp.z);
+    const w = snapped.x * scale;
+    const h = snapped.z * scale;
+    ctx.translate(x, z);
+    ctx.rotate(-fp.rotY * Math.PI / 180); // negate: Z-axis flip reverses rotation direction
+    ctx.fillStyle = 'rgba(60,50,35,0.75)';
+    ctx.strokeStyle = 'rgba(140,110,60,0.7)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.rect(-w/2, -h/2, w, h); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(140,110,60,0.22)'; ctx.lineWidth = 0.8;
+    ctx.save(); ctx.clip();
+    for (let i = -w; i < w * 2; i += sp) {
+      ctx.beginPath(); ctx.moveTo(i - h, -h); ctx.lineTo(i + h, h); ctx.stroke();
+    }
+    ctx.restore();
+  } else {
+    const w = fp.x * scale;
+    const h = fp.z * scale;
+    ctx.fillStyle = 'rgba(60,50,35,0.75)';
+    ctx.strokeStyle = 'rgba(140,110,60,0.7)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.rect(x - w/2, z - h/2, w, h); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = 'rgba(140,110,60,0.22)'; ctx.lineWidth = 0.8;
+    ctx.save(); ctx.clip();
+    for (let i = x - w; i < x + w * 2; i += sp) {
+      ctx.beginPath(); ctx.moveTo(i - h, z - h); ctx.lineTo(i + h, z + h); ctx.stroke();
+    }
+    ctx.restore();
+    if (label) {
+      ctx.font = `${Math.max(6, fontSize - 1)}px "Share Tech Mono", monospace`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillText(label, x+1, z+1);
+      ctx.fillStyle = 'rgba(180,150,90,0.9)'; ctx.fillText(label, x, z);
+    }
+  }
+
+  ctx.restore();
+}
+
+function drawTerrain(x, z, name, rotY, r, fontSize, size, scale) {
+  const fp = getTerrainFootprint(name, size, rotY);
+  if (!fp) return; // skip sub-inch decorative pieces
+
+  ctx.save();
+  const w = fp.x * scale;
+  const h = fp.z * scale;
+
+  ctx.fillStyle = 'rgba(60,50,35,0.75)';
   ctx.strokeStyle = 'rgba(140,110,60,0.7)';
-  ctx.lineWidth = isChild ? 0.8 : 1.2;
+  ctx.lineWidth = 1.2;
   ctx.beginPath();
   ctx.rect(x - w/2, z - h/2, w, h);
   ctx.fill();
   ctx.stroke();
 
   // Hatch lines
-  ctx.strokeStyle = 'rgba(140,110,60,0.25)';
+  ctx.strokeStyle = 'rgba(140,110,60,0.22)';
   ctx.lineWidth = 0.8;
   ctx.save();
   ctx.clip();
-  for (let i = x - w; i < x + w * 2; i += Math.max(6, r * 0.6)) {
+  const spacing = Math.max(6, r * 0.55);
+  for (let i = x - w; i < x + w * 2; i += spacing) {
     ctx.beginPath(); ctx.moveTo(i - h, z - h); ctx.lineTo(i + h, z + h); ctx.stroke();
   }
   ctx.restore();
 
-  // Label on primary piece only, not child floor-plates
-  if (!isChild && name) {
-    const clean = stripBBCode(name);
-    // Show e.g. "Ruin (9\")" — strip [sup]...[/sup] noise
-    const label = (clean.match(/^[^[]+/) || [clean])[0].trim().slice(0, 12);
-    if (label) {
-      ctx.font = `${Math.max(6, fontSize - 1)}px "Share Tech Mono", monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = 'rgba(0,0,0,0.6)';
-      ctx.fillText(label, x+1, z+1);
-      ctx.fillStyle = 'rgba(180,150,90,0.85)';
-      ctx.fillText(label, x, z);
-    }
+  // Label
+  const clean = (name || '').replace(/\[sup\].*?\[\/sup\]/gi, '').replace(/\[[^\]]*\]/g, '').trim();
+  const label = clean.slice(0, 10);
+  if (label) {
+    ctx.font = `${Math.max(6, fontSize - 1)}px "Share Tech Mono", monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(0,0,0,0.65)';
+    ctx.fillText(label, x+1, z+1);
+    ctx.fillStyle = 'rgba(180,150,90,0.9)';
+    ctx.fillText(label, x, z);
   }
 
   ctx.restore();
@@ -996,34 +1087,29 @@ function drawTerrain(x, z, name, rotY, r, fontSize, size, scale, tag, isChild) {
 
 function drawObjective(x, z, name, num, r, fontSize) {
   ctx.save();
-  const or = r * 1.1;
+  const or_ = r; // r is already the correct pixel radius
 
   // Outer glow
-  const grad = ctx.createRadialGradient(x, z, or * 0.3, x, z, or * 1.6);
+  const grad = ctx.createRadialGradient(x, z, or_ * 0.3, x, z, or_ * 1.6);
   grad.addColorStop(0, 'rgba(255,200,0,0.25)');
   grad.addColorStop(1, 'rgba(255,200,0,0)');
   ctx.beginPath();
-  ctx.arc(x, z, or * 1.6, 0, Math.PI * 2);
+  ctx.arc(x, z, or_ * 1.6, 0, Math.PI * 2);
   ctx.fillStyle = grad;
   ctx.fill();
 
-  // Hexagon shape
+  // Circle (objectives are round, not hexagonal)
   ctx.beginPath();
-  for (let i = 0; i < 6; i++) {
-    const angle = (i * Math.PI / 3) - Math.PI / 6;
-    const xi = x + or * Math.cos(angle);
-    const zi = z + or * Math.sin(angle);
-    i === 0 ? ctx.moveTo(xi, zi) : ctx.lineTo(xi, zi);
-  }
-  ctx.closePath();
-  ctx.fillStyle = 'rgba(40,30,0,0.85)';
+  ctx.arc(x, z, or_, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(40,30,0,0.7)';
   ctx.fill();
   ctx.strokeStyle = '#f0c020';
-  ctx.lineWidth = 1.8;
+  ctx.lineWidth = 2;
   ctx.stroke();
 
   // Number
-  ctx.font = `bold ${Math.max(8, fontSize + 1)}px "Rajdhani", sans-serif`;
+  const numFontSize = Math.max(10, or_ * 0.55);
+  ctx.font = `bold ${numFontSize}px "Rajdhani", sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.fillStyle = '#f0c020';
@@ -1074,14 +1160,6 @@ function drawUnit(x, z, name, team, r, fontSize, tag, highlighted) {
   ctx.strokeStyle = highlighted ? '#4fc88a' : c.stroke;
   ctx.lineWidth = highlighted ? 2.5 : 1.5;
   ctx.stroke();
-
-  // Inner highlight dot
-  ctx.beginPath();
-  ctx.arc(x - r*0.25, z - r*0.25, r * 0.2, 0, Math.PI * 2);
-  ctx.fillStyle = highlighted ? '#4fc88a' : c.light;
-  ctx.globalAlpha = 0.6;
-  ctx.fill();
-  ctx.globalAlpha = 1;
 
   // Label below
   const cleanName = extractUnitName(name);

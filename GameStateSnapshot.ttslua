@@ -207,34 +207,40 @@ local function isBCBTerrain(obj)
 end
 
 -- ----------------------------------------------------------------
--- Capture child BlockSquare floor-plates for Custom_Model terrain.
---
--- Structure in Hutber terrain pieces:
---   BlockSquare root   → root IS the floor plate; use root scale directly.
---   Custom_Model root  → root is a wall mesh; find the direct BlockSquare
---                        child which holds the floor plate scale & position.
---
--- Child positions in the Lua JSON are LOCAL to the parent.
--- TTS obj.getObjects() returns live objects whose getPosition() is already
--- WORLD-SPACE, so no manual rotation maths needed.
+-- Build a lookup of all BlockSquare objects on the mat by position.
+-- These are the floor-plate objects that define exact terrain footprints.
+-- Called once per snapshot, result passed into getObjectsOnMat.
 -- ----------------------------------------------------------------
-local function getTerrainChildren(obj)
-    local children = {}
-    pcall(function()
-        for _, child in ipairs(obj.getAttachments()) do
-            if child.name == "BlockSquare" then
-                local cp  = child.getPosition()
-                local cs  = child.getScale()
-                local cr  = child.getRotation()
-                table.insert(children, {
-                    position   = { x = rnd(cp.x), z = rnd(cp.z) },
-                    size       = { x = rnd(cs.x), z = rnd(cs.z) },
-                    rotation_y = rnd(cr.y, 1),
+local function collectBlockSquares(bounds)
+    local plates = {}
+    for _, obj in ipairs(getAllObjects()) do
+        if obj.name == "BlockSquare" then
+            local pos = obj.getPosition()
+            if isInsideBounds(pos, bounds) then
+                local s = obj.getScale()
+                local r = obj.getRotation()
+                table.insert(plates, {
+                    x  = rnd(pos.x),
+                    z  = rnd(pos.z),
+                    sx = rnd(s.x),
+                    sz = rnd(s.z),
+                    ry = rnd(r.y, 1),
                 })
             end
         end
-    end)
-    return children
+    end
+    return plates
+end
+
+-- Find the nearest BlockSquare plate within maxDist inches of (tx, tz).
+local function nearestPlate(plates, tx, tz, maxDist)
+    local best, bestD = nil, maxDist * maxDist
+    for _, p in ipairs(plates) do
+        local dx, dz = p.x - tx, p.z - tz
+        local d2 = dx*dx + dz*dz
+        if d2 < bestD then bestD = d2; best = p end
+    end
+    return best
 end
 
 -- ----------------------------------------------------------------
@@ -243,6 +249,11 @@ end
 local function getObjectsOnMat()
     local bounds, mat = getMatBounds()
     if not bounds then return {} end
+
+    -- Pre-collect all BlockSquare floor plates on the mat.
+    -- These give authoritative footprint size/rotation for terrain pieces.
+    local plates = collectBlockSquares(bounds)
+
     local result = {}
 
     for _, obj in ipairs(getAllObjects()) do
@@ -294,19 +305,23 @@ local function getObjectsOnMat()
                     end
 
                     -- ── Size capture ───────────────────────────────────
-                    -- For terrain: use getScale() — this is the exact floor
-                    -- footprint in TTS-inches, not the inflated mesh AABB.
-                    -- For units/objectives: keep getBounds() which gives the
-                    -- physical token diameter (useful for objectives at ~7.5").
+                    -- For terrain: find nearest BlockSquare floor plate (authoritative).
+                    -- Fallback to getScale() if no plate found within 8".
+                    -- For units/objectives: use getBounds() for token diameter.
                     local objSize = { x = 1, z = 1 }
+                    local footprintRot = nil
                     if isTerrain then
-                        pcall(function()
-                            local s = obj.getScale()
-                            objSize = {
-                                x = rnd(s.x),
-                                z = rnd(s.z),
-                            }
-                        end)
+                        local plate = nearestPlate(plates, pos.x, pos.z, 4)
+                        if plate then
+                            objSize = { x = plate.sx, z = plate.sz }
+                            footprintRot = plate.ry
+                        else
+                            -- No nearby plate — fall back to getScale()
+                            pcall(function()
+                                local s = obj.getScale()
+                                objSize = { x = rnd(s.x), z = rnd(s.z) }
+                            end)
+                        end
                     else
                         pcall(function()
                             local b = obj.getBounds()
@@ -317,27 +332,18 @@ local function getObjectsOnMat()
                         end)
                     end
 
-                    -- ── Child floor-plates (terrain only) ─────────────
-                    -- Only Custom_Model roots need this — BlockSquare roots
-                    -- already encode the full footprint in their own scale.
-                    local children = nil
-                    if isTerrain and obj.name == "Custom_Model" then
-                        local c = getTerrainChildren(obj)
-                        if #c > 0 then children = c end
-                    end
-
                     local entry = {
-                        guid        = obj.getGUID(),
-                        name        = name,
-                        tag         = obj.tag,
-                        type        = objType,
-                        position    = { x = rnd(pos.x), z = rnd(pos.z) },
-                        rotation_y  = rnd(rot.y, 1),
-                        size        = objSize,
-                        locked      = obj.getLock(),
-                        description = obj.getDescription(),
+                        guid             = obj.getGUID(),
+                        name             = name,
+                        tag              = obj.tag,
+                        type             = objType,
+                        position         = { x = rnd(pos.x), z = rnd(pos.z) },
+                        rotation_y       = rnd(rot.y, 1),
+                        size             = objSize,
+                        footprint_rotation = footprintRot,
+                        locked           = obj.getLock(),
+                        description      = obj.getDescription(),
                     }
-                    if children then entry.children = children end
 
                     table.insert(result, entry)
                 end
