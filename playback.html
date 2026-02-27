@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BATTLE REPLAY — Glory Hogs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&family=Bebas+Neue&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg:        #0a0c0f;
+    --surface:   #111418;
+    --border:    #1e2530;
+    --accent:    #c8391a;
+    --accent2:   #e8a020;
+    --green:     #2dce6a;
+    --dim:       #3a4455;
+    --text:      #c8d4e0;
+    --text-dim:  #5a6878;
+    --scan:      rgba(200, 57, 26, 0.04);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    overflow: hidden;
+  }
+
+  /* scanline overlay */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      var(--scan) 2px,
+      var(--scan) 4px
+    );
+    pointer-events: none;
+    z-index: 1000;
+  }
+
+  /* ── LAYOUT ── */
+  .app {
+    display: grid;
+    grid-template-rows: 56px 1fr 140px;
+    height: 100vh;
+    gap: 0;
+  }
+
+  /* ── HEADER ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    position: relative;
+    overflow: hidden;
+  }
+  header::before {
+    content: '';
+    position: absolute; left: 0; top: 0; bottom: 0;
+    width: 4px;
+    background: var(--accent);
+  }
+
+  .logo {
+    font-family: 'Bebas Neue', sans-serif;
+    font-size: 28px;
+    letter-spacing: 4px;
+    color: var(--accent);
+    text-shadow: 0 0 20px rgba(200,57,26,0.5);
+  }
+  .logo span { color: var(--text-dim); font-size: 16px; letter-spacing: 2px; margin-left: 12px; }
+
+  .header-meta {
+    display: flex;
+    gap: 32px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .header-meta .val { color: var(--accent2); }
+
+  .status-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    display: inline-block;
+    margin-right: 6px;
+    box-shadow: 0 0 8px var(--green);
+  }
+  .status-dot.inactive { background: var(--dim); box-shadow: none; }
+
+  /* ── MAIN VIEWER ── */
+  .viewer {
+    position: relative;
+    overflow: hidden;
+    background: #050607;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #battlefield-img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    display: block;
+    transition: opacity 0.15s ease;
+    image-rendering: pixelated;
+  }
+
+  /* corner brackets */
+  .corner {
+    position: absolute;
+    width: 24px; height: 24px;
+    pointer-events: none;
+    opacity: 0.6;
+  }
+  .corner::before, .corner::after {
+    content: '';
+    position: absolute;
+    background: var(--accent);
+  }
+  .corner::before { width: 100%; height: 2px; top: 0; left: 0; }
+  .corner::after  { width: 2px; height: 100%; top: 0; left: 0; }
+  .corner.tl { top: 16px; left: 16px; }
+  .corner.tr { top: 16px; right: 16px; transform: scaleX(-1); }
+  .corner.bl { bottom: 16px; left: 16px; transform: scaleY(-1); }
+  .corner.br { bottom: 16px; right: 16px; transform: scale(-1); }
+
+  /* timestamp overlay */
+  .ts-overlay {
+    position: absolute;
+    bottom: 20px; right: 20px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px;
+    color: rgba(200, 212, 224, 0.7);
+    background: rgba(0,0,0,0.6);
+    padding: 4px 10px;
+    border-left: 2px solid var(--accent);
+    letter-spacing: 1px;
+  }
+
+  .frame-counter {
+    position: absolute;
+    top: 20px; left: 20px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    background: rgba(0,0,0,0.6);
+    padding: 4px 10px;
+    letter-spacing: 1px;
+    border: 1px solid rgba(200,57,26,0.3);
+  }
+
+  /* empty state */
+  .empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    color: var(--text-dim);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px;
+    letter-spacing: 1px;
+  }
+  .empty-state .big { font-family: 'Bebas Neue', sans-serif; font-size: 48px; color: var(--dim); letter-spacing: 6px; }
+
+  /* ── CONTROLS ── */
+  .controls {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-rows: auto 1fr;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  /* Timeline scrubber */
+  .timeline-wrap {
+    padding: 10px 24px 6px;
+    position: relative;
+  }
+
+  .timeline-track {
+    position: relative;
+    height: 32px;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  /* thumbnail strip */
+  .thumb-strip {
+    display: flex;
+    gap: 3px;
+    height: 100%;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .thumb {
+    flex-shrink: 0;
+    height: 100%;
+    background: var(--dim);
+    cursor: pointer;
+    transition: opacity 0.1s;
+    object-fit: cover;
+    opacity: 0.6;
+  }
+  .thumb:hover { opacity: 1; }
+  .thumb.active { opacity: 1; outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  /* playhead */
+  #playhead {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 8px var(--accent);
+    pointer-events: none;
+    transition: left 0.1s linear;
+  }
+  #playhead::after {
+    content: '';
+    position: absolute;
+    top: -4px; left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-top-color: var(--accent);
+  }
+
+  /* Bottom control bar */
+  .ctrl-bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 24px 10px;
+  }
+
+  .btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    padding: 6px 16px;
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+    text-transform: uppercase;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    min-width: 90px;
+  }
+  .btn.primary:hover { background: #e04020; }
+
+  .btn-icon {
+    width: 36px; height: 36px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    padding: 0;
+  }
+
+  .speed-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-left: auto;
+  }
+  .speed-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+  .speed-btn.active { border-color: var(--accent2); color: var(--accent2); }
+
+  .time-display {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 13px;
+    color: var(--accent2);
+    letter-spacing: 1px;
+    white-space: nowrap;
+    min-width: 120px;
+  }
+
+  .session-info {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 1px;
+  }
+
+  /* Loading state */
+  .loading {
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 12px;
+    color: var(--accent2);
+    letter-spacing: 2px;
+    animation: blink 1s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- HEADER -->
+  <header>
+    <div class="logo">
+      BATTLE REPLAY
+      <span>// GLORY HOGS</span>
+    </div>
+    <div class="header-meta">
+      <div><span class="status-dot" id="status-dot"></span><span id="status-text">NO SESSION</span></div>
+      <div>FRAMES&nbsp;<span class="val" id="hdr-frames">—</span></div>
+      <div>DURATION&nbsp;<span class="val" id="hdr-duration">—</span></div>
+      <div>SESSION&nbsp;<span class="val" id="hdr-session">—</span></div>
+    </div>
+  </header>
+
+  <!-- VIEWER -->
+  <div class="viewer" id="viewer">
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+
+    <div class="empty-state" id="empty-state">
+      <div class="big">NO DATA</div>
+      <div>Load a session to begin replay</div>
+      <div style="color:var(--dim)">screenshots/manifest.json</div>
+    </div>
+
+    <img id="battlefield-img" src="" alt="" style="display:none">
+    <div class="ts-overlay" id="ts-overlay" style="display:none"></div>
+    <div class="frame-counter" id="frame-counter" style="display:none"></div>
+  </div>
+
+  <!-- CONTROLS -->
+  <div class="controls">
+    <div class="timeline-wrap">
+      <div class="timeline-track" id="timeline-track">
+        <div class="thumb-strip" id="thumb-strip"></div>
+        <div id="playhead" style="left: 0; display: none;"></div>
+      </div>
+    </div>
+
+    <div class="ctrl-bar">
+      <button class="btn btn-icon" id="btn-prev" title="Previous frame">◀◀</button>
+      <button class="btn primary btn-icon" id="btn-play" title="Play/Pause">▶</button>
+      <button class="btn btn-icon" id="btn-next" title="Next frame">▶▶</button>
+
+      <div class="time-display" id="time-display">--:-- / --:--</div>
+      <div class="session-info" id="session-info"></div>
+
+      <div class="speed-wrap">
+        SPEED&nbsp;
+        <button class="btn speed-btn" data-speed="0.5">0.5×</button>
+        <button class="btn speed-btn active" data-speed="1">1×</button>
+        <button class="btn speed-btn" data-speed="2">2×</button>
+        <button class="btn speed-btn" data-speed="4">4×</button>
+      </div>
+
+      <button class="btn" id="btn-load">LOAD SESSION</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- Hidden file input for manual load -->
+<input type="file" id="file-input" accept=".json" style="display:none">
+
+<script>
+// ── State ──
+const state = {
+  frames: [],
+  currentIndex: 0,
+  playing: false,
+  speed: 1,
+  playTimer: null,
+  sessionStart: null,
+};
+
+// ── Elements ──
+const img          = document.getElementById('battlefield-img');
+const emptyState   = document.getElementById('empty-state');
+const tsOverlay    = document.getElementById('ts-overlay');
+const frameCounter = document.getElementById('frame-counter');
+const thumbStrip   = document.getElementById('thumb-strip');
+const playhead     = document.getElementById('playhead');
+const timeDisplay  = document.getElementById('time-display');
+const sessionInfo  = document.getElementById('session-info');
+const btnPlay      = document.getElementById('btn-play');
+const btnPrev      = document.getElementById('btn-prev');
+const btnNext      = document.getElementById('btn-next');
+const btnLoad      = document.getElementById('btn-load');
+const fileInput    = document.getElementById('file-input');
+const hdrFrames    = document.getElementById('hdr-frames');
+const hdrDuration  = document.getElementById('hdr-duration');
+const hdrSession   = document.getElementById('hdr-session');
+const statusDot    = document.getElementById('status-dot');
+const statusText   = document.getElementById('status-text');
+
+// ── Load manifest ──
+async function tryAutoLoad() {
+  try {
+    // First read latest.json to find the current session folder
+    const latestRes = await fetch('latest.json?t=' + Date.now());
+    if (!latestRes.ok) return;
+    const latest = await latestRes.json();
+    const sessionDir = latest.session_dir;
+
+    const res = await fetch(sessionDir + '/manifest.json?t=' + Date.now());
+    if (!res.ok) return;
+    const manifest = await res.json();
+    loadManifest(manifest, sessionDir + '/');
+  } catch(e) {
+    // No server running or no manifest yet — that's fine
+  }
+}
+
+function loadManifest(manifest, basePath) {
+  if (!manifest.frames || manifest.frames.length === 0) {
+    showStatus('EMPTY SESSION', false);
+    return;
+  }
+  state.frames = manifest.frames.map(f => ({ ...f, src: basePath + f.filename }));
+  state.sessionStart = manifest.session_start;
+  state.currentIndex = 0;
+
+  buildThumbs();
+  updateHeader();
+  showFrame(0);
+  showStatus('SESSION LOADED', true);
+}
+
+// ── Build thumbnail strip ──
+function buildThumbs() {
+  thumbStrip.innerHTML = '';
+  const trackWidth = document.getElementById('timeline-track').offsetWidth;
+  const thumbW = Math.max(4, Math.floor(trackWidth / state.frames.length) - 3);
+
+  state.frames.forEach((f, i) => {
+    const el = document.createElement('img');
+    el.className = 'thumb';
+    el.src = f.src;
+    el.style.width = thumbW + 'px';
+    el.style.minWidth = thumbW + 'px';
+    el.addEventListener('click', () => { stopPlay(); showFrame(i); });
+    el.dataset.index = i;
+    thumbStrip.appendChild(el);
+  });
+
+  playhead.style.display = 'block';
+  updatePlayhead();
+}
+
+function updateThumbHighlight() {
+  thumbStrip.querySelectorAll('.thumb').forEach(t => {
+    t.classList.toggle('active', +t.dataset.index === state.currentIndex);
+  });
+}
+
+function updatePlayhead() {
+  if (state.frames.length === 0) return;
+  const track = document.getElementById('timeline-track');
+  const pct = state.frames.length > 1
+    ? state.currentIndex / (state.frames.length - 1)
+    : 0;
+  playhead.style.left = (pct * track.offsetWidth) + 'px';
+}
+
+// ── Show a frame ──
+function showFrame(index) {
+  if (state.frames.length === 0) return;
+  index = Math.max(0, Math.min(index, state.frames.length - 1));
+  state.currentIndex = index;
+  const f = state.frames[index];
+
+  emptyState.style.display = 'none';
+  img.style.display = 'block';
+  img.style.opacity = '0.4';
+  img.src = f.src;
+  img.onload = () => { img.style.opacity = '1'; };
+
+  tsOverlay.style.display = 'block';
+  frameCounter.style.display = 'block';
+
+  // Format timestamp
+  const d = new Date(f.timestamp);
+  tsOverlay.textContent = d.toLocaleTimeString('en-GB');
+
+  // Elapsed time
+  const elapsed = f.elapsed_seconds || (index * 60);
+  const em = String(Math.floor(elapsed / 60)).padStart(2, '0');
+  const es = String(elapsed % 60).padStart(2, '0');
+  const totalSec = (state.frames.length - 1) * 60;
+  const tm = String(Math.floor(totalSec / 60)).padStart(2, '0');
+  const ts2 = String(totalSec % 60).padStart(2, '0');
+
+  frameCounter.textContent = `FRAME ${String(index + 1).padStart(3,'0')} / ${String(state.frames.length).padStart(3,'0')}`;
+  timeDisplay.textContent = `${em}:${es} / ${tm}:${ts2}`;
+
+  updateThumbHighlight();
+  updatePlayhead();
+
+  // Scroll thumb into view
+  const thumb = thumbStrip.querySelector(`.thumb[data-index="${index}"]`);
+  if (thumb) thumb.scrollIntoView({ inline: 'nearest', behavior: 'smooth' });
+}
+
+// ── Playback ──
+function startPlay() {
+  if (state.frames.length === 0) return;
+  state.playing = true;
+  btnPlay.textContent = '⏸';
+  scheduleNext();
+}
+
+function scheduleNext() {
+  if (!state.playing) return;
+  const delay = 1000 / state.speed; // 1s per frame / speed
+  state.playTimer = setTimeout(() => {
+    if (state.currentIndex >= state.frames.length - 1) {
+      stopPlay();
+      return;
+    }
+    showFrame(state.currentIndex + 1);
+    scheduleNext();
+  }, delay);
+}
+
+function stopPlay() {
+  state.playing = false;
+  btnPlay.textContent = '▶';
+  clearTimeout(state.playTimer);
+}
+
+function togglePlay() {
+  state.playing ? stopPlay() : startPlay();
+}
+
+// ── Header / status ──
+function updateHeader() {
+  hdrFrames.textContent   = state.frames.length;
+  const totalSec = (state.frames.length - 1) * 60;
+  const hh = String(Math.floor(totalSec / 3600)).padStart(2,'0');
+  const mm = String(Math.floor((totalSec % 3600) / 60)).padStart(2,'0');
+  const ss = String(totalSec % 60).padStart(2,'0');
+  hdrDuration.textContent = `${hh}:${mm}:${ss}`;
+  if (state.sessionStart) {
+    const d = new Date(state.sessionStart);
+    hdrSession.textContent = d.toLocaleDateString('en-GB') + ' ' + d.toLocaleTimeString('en-GB');
+  }
+}
+
+function showStatus(msg, active) {
+  statusText.textContent = msg;
+  statusDot.classList.toggle('inactive', !active);
+}
+
+// ── Event listeners ──
+btnPlay.addEventListener('click', togglePlay);
+btnPrev.addEventListener('click', () => { stopPlay(); showFrame(state.currentIndex - 1); });
+btnNext.addEventListener('click', () => { stopPlay(); showFrame(state.currentIndex + 1); });
+
+document.querySelectorAll('.speed-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.speed = parseFloat(btn.dataset.speed);
+    document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    if (state.playing) { clearTimeout(state.playTimer); scheduleNext(); }
+  });
+});
+
+// Timeline click/drag
+const track = document.getElementById('timeline-track');
+function seekFromEvent(e) {
+  const rect = track.getBoundingClientRect();
+  const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  const idx = Math.round(pct * (state.frames.length - 1));
+  showFrame(idx);
+}
+let dragging = false;
+track.addEventListener('mousedown', e => { dragging = true; stopPlay(); seekFromEvent(e); });
+window.addEventListener('mousemove', e => { if (dragging) seekFromEvent(e); });
+window.addEventListener('mouseup',   () => { dragging = false; });
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.key === ' ')           { e.preventDefault(); togglePlay(); }
+  if (e.key === 'ArrowLeft')   { stopPlay(); showFrame(state.currentIndex - 1); }
+  if (e.key === 'ArrowRight')  { stopPlay(); showFrame(state.currentIndex + 1); }
+  if (e.key === 'Home')        { stopPlay(); showFrame(0); }
+  if (e.key === 'End')         { stopPlay(); showFrame(state.frames.length - 1); }
+});
+
+// Load button — file picker fallback
+btnLoad.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', async () => {
+  if (!fileInput.files.length) return;
+  const file = fileInput.files[0];
+  const text = await file.text();
+  const manifest = JSON.parse(text);
+  // Determine base path from file location
+  loadManifest(manifest, 'screenshots/');
+  fileInput.value = '';
+});
+
+// Auto-load on startup
+tryAutoLoad();
+</script>
+</body>
+</html>
