@@ -4,12 +4,11 @@ TTS Battlefield Replay — System Tray App
 Double-click to start. A tray icon appears in the Windows system tray.
 
 Tray menu:
-  • Calibrate Region   — drag to select battlefield area
-  • Start Session      — begin listening for TTS capture signals
-  • Stop Session       — stop listening
-  • Open Replay        — open playback.html in browser
-  • Clean Frames       — reprocess existing frames to strip drawing lines
-  • Setup Instructions — show the TTS Lua setup guide
+  • Calibrate Region        — drag to select battlefield area
+  • Start Session           — begin listening for TTS capture signals
+  • Stop Session            — stop listening (auto-compiles replay.mp4)
+  • Fix Screenshot Glitches — reprocess existing frames to strip drawing lines
+  • Setup Guide             — step-by-step setup wizard
   • Exit
 
 Requirements (for running from source):
@@ -22,11 +21,11 @@ import json
 import time
 import socket
 import threading
-import webbrowser
-import http.server
-import socketserver
 from datetime import datetime
 from pathlib import Path
+
+# ── Thread safety ────────────────────────────────────────────────────────────────
+_state_lock = threading.Lock()
 
 # ── Paths (dynamic — works from .py or compiled .exe) ─────────────────────────
 
@@ -40,579 +39,11 @@ APP_DIR    = _app_dir()
 STORE_DIR  = APP_DIR / "TTS Replay Sessions"
 CONFIG_FILE = APP_DIR / "config.json"
 
-SERVER_PORT      = 8080
 TTS_LISTEN_PORT  = 39998
 CAMERA_SETTLE_MS = 500
 
 # ── Embedded assets ───────────────────────────────────────────────────────────
 
-PLAYBACK_HTML = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>BATTLE REPLAY — Glory Hogs</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&family=Bebas+Neue&display=swap" rel="stylesheet">
-
-<style>
-  :root {
-    --bg:        #0a0c0f;
-    --surface:   #111418;
-    --border:    #1e2530;
-    --accent:    #c8391a;
-    --accent2:   #e8a020;
-    --green:     #2dce6a;
-    --dim:       #3a4455;
-    --text:      #c8d4e0;
-    --text-dim:  #5a6878;
-    --scan:      rgba(200, 57, 26, 0.04);
-  }
-
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  html, body {
-    height: 100%;
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Rajdhani', sans-serif;
-    overflow: hidden;
-  }
-
-  body::after {
-    content: '';
-    position: fixed; inset: 0;
-    background: repeating-linear-gradient(
-      0deg, transparent, transparent 2px,
-      var(--scan) 2px, var(--scan) 4px
-    );
-    pointer-events: none;
-    z-index: 1000;
-  }
-
-  .app {
-    display: grid;
-    grid-template-rows: 56px 1fr 140px;
-    height: 100vh;
-    gap: 0;
-  }
-
-  header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 24px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    position: relative;
-    overflow: hidden;
-  }
-  header::before {
-    content: '';
-    position: absolute; left: 0; top: 0; bottom: 0;
-    width: 4px;
-    background: var(--accent);
-  }
-
-  .logo {
-    font-family: 'Bebas Neue', sans-serif;
-    font-size: 28px;
-    letter-spacing: 4px;
-    color: var(--accent);
-    text-shadow: 0 0 20px rgba(200,57,26,0.5);
-  }
-  .logo span { color: var(--text-dim); font-size: 16px; letter-spacing: 2px; margin-left: 12px; }
-
-  .header-meta {
-    display: flex;
-    gap: 32px;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 12px;
-    color: var(--text-dim);
-  }
-  .header-meta .val { color: var(--accent2); }
-
-  .status-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--green);
-    display: inline-block;
-    margin-right: 6px;
-    box-shadow: 0 0 8px var(--green);
-  }
-  .status-dot.inactive { background: var(--dim); box-shadow: none; }
-
-  .viewer {
-    position: relative;
-    overflow: hidden;
-    background: #050607;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  #battlefield-img {
-    max-width: 100%;
-    max-height: 100%;
-    object-fit: contain;
-    display: block;
-    transition: opacity 0.15s ease;
-    image-rendering: pixelated;
-  }
-
-  .corner {
-    position: absolute;
-    width: 24px; height: 24px;
-    pointer-events: none;
-    opacity: 0.6;
-  }
-  .corner::before, .corner::after {
-    content: '';
-    position: absolute;
-    background: var(--accent);
-  }
-  .corner::before { width: 100%; height: 2px; top: 0; left: 0; }
-  .corner::after  { width: 2px; height: 100%; top: 0; left: 0; }
-  .corner.tl { top: 16px; left: 16px; }
-  .corner.tr { top: 16px; right: 16px; transform: scaleX(-1); }
-  .corner.bl { bottom: 16px; left: 16px; transform: scaleY(-1); }
-  .corner.br { bottom: 16px; right: 16px; transform: scale(-1); }
-
-  .ts-overlay {
-    position: absolute;
-    bottom: 20px; right: 20px;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 13px;
-    color: rgba(200, 212, 224, 0.7);
-    background: rgba(0,0,0,0.6);
-    padding: 4px 10px;
-    border-left: 2px solid var(--accent);
-    letter-spacing: 1px;
-  }
-
-  .frame-counter {
-    position: absolute;
-    top: 20px; left: 20px;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 11px;
-    color: var(--accent);
-    background: rgba(0,0,0,0.6);
-    padding: 4px 10px;
-    letter-spacing: 1px;
-    border: 1px solid rgba(200,57,26,0.3);
-  }
-
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 12px;
-    color: var(--text-dim);
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 13px;
-    letter-spacing: 1px;
-  }
-  .empty-state .big { font-family: 'Bebas Neue', sans-serif; font-size: 48px; color: var(--dim); letter-spacing: 6px; }
-
-  .controls {
-    background: var(--surface);
-    border-top: 1px solid var(--border);
-    display: grid;
-    grid-template-rows: auto 1fr;
-    padding: 0;
-    overflow: hidden;
-  }
-
-  .timeline-wrap {
-    padding: 10px 24px 6px;
-    position: relative;
-  }
-
-  .timeline-track {
-    position: relative;
-    height: 32px;
-    cursor: pointer;
-    user-select: none;
-  }
-
-  .thumb-strip {
-    display: flex;
-    gap: 3px;
-    height: 100%;
-    overflow: hidden;
-    border: 1px solid var(--border);
-    background: var(--bg);
-  }
-
-  .thumb {
-    flex-shrink: 0;
-    height: 100%;
-    background: var(--dim);
-    cursor: pointer;
-    transition: opacity 0.1s;
-    object-fit: cover;
-    opacity: 0.6;
-  }
-  .thumb:hover { opacity: 1; }
-  .thumb.active { opacity: 1; outline: 2px solid var(--accent); outline-offset: -2px; }
-
-  #playhead {
-    position: absolute;
-    top: 0; bottom: 0;
-    width: 2px;
-    background: var(--accent);
-    box-shadow: 0 0 8px var(--accent);
-    pointer-events: none;
-    transition: left 0.1s linear;
-  }
-  #playhead::after {
-    content: '';
-    position: absolute;
-    top: -4px; left: 50%;
-    transform: translateX(-50%);
-    border: 5px solid transparent;
-    border-top-color: var(--accent);
-  }
-
-  .ctrl-bar {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 0 24px 10px;
-  }
-
-  .btn {
-    background: none;
-    border: 1px solid var(--border);
-    color: var(--text);
-    font-family: 'Rajdhani', sans-serif;
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: 1px;
-    padding: 6px 16px;
-    cursor: pointer;
-    transition: border-color 0.15s, color 0.15s, background 0.15s;
-    text-transform: uppercase;
-  }
-  .btn:hover { border-color: var(--accent); color: var(--accent); }
-  .btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
-    min-width: 90px;
-  }
-  .btn.primary:hover { background: #e04020; }
-
-  .btn-icon {
-    width: 36px; height: 36px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 16px;
-    padding: 0;
-  }
-
-  .speed-wrap {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 12px;
-    color: var(--text-dim);
-    margin-left: auto;
-  }
-  .speed-btn { padding: 4px 10px; font-size: 12px; }
-  .speed-btn.active { border-color: var(--accent2); color: var(--accent2); }
-
-  .time-display {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 13px;
-    color: var(--accent2);
-    letter-spacing: 1px;
-    white-space: nowrap;
-    min-width: 120px;
-  }
-
-  .session-info {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 11px;
-    color: var(--text-dim);
-    letter-spacing: 1px;
-  }
-
-  .loading {
-    font-family: 'Share Tech Mono', monospace;
-    font-size: 12px;
-    color: var(--accent2);
-    letter-spacing: 2px;
-    animation: blink 1s step-end infinite;
-  }
-  @keyframes blink { 50% { opacity: 0; } }
-</style>
-</head>
-<body>
-<div class="app">
-
-  <header>
-    <div class="logo">
-      BATTLE REPLAY
-      <span>// GLORY HOGS</span>
-    </div>
-    <div class="header-meta">
-      <div><span class="status-dot" id="status-dot"></span><span id="status-text">NO SESSION</span></div>
-      <div>FRAMES&nbsp;<span class="val" id="hdr-frames">—</span></div>
-      <div>DURATION&nbsp;<span class="val" id="hdr-duration">—</span></div>
-      <div>SESSION&nbsp;<span class="val" id="hdr-session">—</span></div>
-    </div>
-  </header>
-
-  <div class="viewer" id="viewer">
-    <div class="corner tl"></div>
-    <div class="corner tr"></div>
-    <div class="corner bl"></div>
-    <div class="corner br"></div>
-
-    <div class="empty-state" id="empty-state">
-      <div class="big">NO DATA</div>
-      <div>Load a session to begin replay</div>
-      <div style="color:var(--dim)">Waiting for TTS Replay tray app...</div>
-    </div>
-
-    <img id="battlefield-img" src="" alt="" style="display:none">
-    <div class="ts-overlay" id="ts-overlay" style="display:none"></div>
-    <div class="frame-counter" id="frame-counter" style="display:none"></div>
-  </div>
-
-  <div class="controls">
-    <div class="timeline-wrap">
-      <div class="timeline-track" id="timeline-track">
-        <div class="thumb-strip" id="thumb-strip"></div>
-        <div id="playhead" style="left: 0; display: none;"></div>
-      </div>
-    </div>
-
-    <div class="ctrl-bar">
-      <button class="btn btn-icon" id="btn-prev" title="Previous frame">&#9664;&#9664;</button>
-      <button class="btn primary btn-icon" id="btn-play" title="Play/Pause">&#9654;</button>
-      <button class="btn btn-icon" id="btn-next" title="Next frame">&#9654;&#9654;</button>
-
-      <div class="time-display" id="time-display">--:-- / --:--</div>
-      <div class="session-info" id="session-info"></div>
-
-      <div class="speed-wrap">
-        SPEED&nbsp;
-        <button class="btn speed-btn" data-speed="0.5">0.5&times;</button>
-        <button class="btn speed-btn active" data-speed="1">1&times;</button>
-        <button class="btn speed-btn" data-speed="2">2&times;</button>
-        <button class="btn speed-btn" data-speed="4">4&times;</button>
-      </div>
-
-      <button class="btn" id="btn-load">LOAD SESSION</button>
-    </div>
-  </div>
-
-</div>
-
-<input type="file" id="file-input" accept=".json" style="display:none">
-
-<script>
-const state = {
-  frames: [], currentIndex: 0, playing: false,
-  speed: 1, playTimer: null, sessionStart: null,
-};
-
-const img          = document.getElementById('battlefield-img');
-const emptyState   = document.getElementById('empty-state');
-const tsOverlay    = document.getElementById('ts-overlay');
-const frameCounter = document.getElementById('frame-counter');
-const thumbStrip   = document.getElementById('thumb-strip');
-const playhead     = document.getElementById('playhead');
-const timeDisplay  = document.getElementById('time-display');
-const sessionInfo  = document.getElementById('session-info');
-const btnPlay      = document.getElementById('btn-play');
-const btnPrev      = document.getElementById('btn-prev');
-const btnNext      = document.getElementById('btn-next');
-const btnLoad      = document.getElementById('btn-load');
-const fileInput    = document.getElementById('file-input');
-const hdrFrames    = document.getElementById('hdr-frames');
-const hdrDuration  = document.getElementById('hdr-duration');
-const hdrSession   = document.getElementById('hdr-session');
-const statusDot    = document.getElementById('status-dot');
-const statusText   = document.getElementById('status-text');
-
-async function tryAutoLoad() {
-  try {
-    const latestRes = await fetch('latest.json?t=' + Date.now());
-    if (!latestRes.ok) { showStatus('NO SESSION YET — PRESS CAPTURE IN TTS', false); return; }
-    const latest = await latestRes.json();
-    const sessionDir = latest.session_dir;
-    const res = await fetch(sessionDir + '/manifest.json?t=' + Date.now());
-    if (!res.ok) { showStatus('MANIFEST NOT FOUND: ' + sessionDir, false); return; }
-    const manifest = await res.json();
-    loadManifest(manifest, sessionDir + '/');
-  } catch(e) {
-    showStatus('ERROR — OPEN VIA http://localhost:8080/playback.html', false);
-  }
-}
-
-function loadManifest(manifest, basePath) {
-  if (!manifest.frames || manifest.frames.length === 0) { showStatus('EMPTY SESSION', false); return; }
-  state.frames = manifest.frames.map(f => ({ ...f, src: basePath + f.filename }));
-  state.sessionStart = manifest.session_start;
-  state.currentIndex = 0;
-  buildThumbs();
-  updateHeader();
-  showFrame(0);
-  showStatus('SESSION LOADED', true);
-}
-
-function buildThumbs() {
-  thumbStrip.innerHTML = '';
-  const trackWidth = document.getElementById('timeline-track').offsetWidth;
-  const thumbW = Math.max(4, Math.floor(trackWidth / state.frames.length) - 3);
-  state.frames.forEach((f, i) => {
-    const el = document.createElement('img');
-    el.className = 'thumb';
-    el.src = f.src;
-    el.style.width = thumbW + 'px';
-    el.style.minWidth = thumbW + 'px';
-    el.addEventListener('click', () => { stopPlay(); showFrame(i); });
-    el.dataset.index = i;
-    thumbStrip.appendChild(el);
-  });
-  playhead.style.display = 'block';
-  updatePlayhead();
-}
-
-function updateThumbHighlight() {
-  thumbStrip.querySelectorAll('.thumb').forEach(t => {
-    t.classList.toggle('active', +t.dataset.index === state.currentIndex);
-  });
-}
-
-function updatePlayhead() {
-  if (state.frames.length === 0) return;
-  const track = document.getElementById('timeline-track');
-  const pct = state.frames.length > 1 ? state.currentIndex / (state.frames.length - 1) : 0;
-  playhead.style.left = (pct * track.offsetWidth) + 'px';
-}
-
-function showFrame(index) {
-  if (state.frames.length === 0) return;
-  index = Math.max(0, Math.min(index, state.frames.length - 1));
-  state.currentIndex = index;
-  const f = state.frames[index];
-  emptyState.style.display = 'none';
-  img.style.display = 'block';
-  img.style.opacity = '0.4';
-  img.src = f.src;
-  img.onload = () => { img.style.opacity = '1'; };
-  tsOverlay.style.display = 'block';
-  frameCounter.style.display = 'block';
-  const d = new Date(f.timestamp);
-  tsOverlay.textContent = d.toLocaleTimeString('en-GB');
-  const elapsed = f.elapsed_seconds || (index * 60);
-  const em = String(Math.floor(elapsed / 60)).padStart(2, '0');
-  const es = String(elapsed % 60).padStart(2, '0');
-  const totalSec = (state.frames.length - 1) * 60;
-  const tm = String(Math.floor(totalSec / 60)).padStart(2, '0');
-  const ts2 = String(totalSec % 60).padStart(2, '0');
-  frameCounter.textContent = `FRAME ${String(index + 1).padStart(3,'0')} / ${String(state.frames.length).padStart(3,'0')}`;
-  timeDisplay.textContent = `${em}:${es} / ${tm}:${ts2}`;
-  updateThumbHighlight();
-  updatePlayhead();
-  const thumb = thumbStrip.querySelector(`.thumb[data-index="${index}"]`);
-  if (thumb) thumb.scrollIntoView({ inline: 'nearest', behavior: 'smooth' });
-}
-
-function startPlay() {
-  if (state.frames.length === 0) return;
-  state.playing = true;
-  btnPlay.textContent = '\u23F8';
-  scheduleNext();
-}
-
-function scheduleNext() {
-  if (!state.playing) return;
-  state.playTimer = setTimeout(() => {
-    if (state.currentIndex >= state.frames.length - 1) { stopPlay(); return; }
-    showFrame(state.currentIndex + 1);
-    scheduleNext();
-  }, 1000 / state.speed);
-}
-
-function stopPlay() {
-  state.playing = false;
-  btnPlay.textContent = '\u25B6';
-  clearTimeout(state.playTimer);
-}
-
-function togglePlay() { state.playing ? stopPlay() : startPlay(); }
-
-function updateHeader() {
-  hdrFrames.textContent = state.frames.length;
-  const totalSec = (state.frames.length - 1) * 60;
-  const hh = String(Math.floor(totalSec / 3600)).padStart(2,'0');
-  const mm = String(Math.floor((totalSec % 3600) / 60)).padStart(2,'0');
-  const ss = String(totalSec % 60).padStart(2,'0');
-  hdrDuration.textContent = `${hh}:${mm}:${ss}`;
-  if (state.sessionStart) {
-    const d = new Date(state.sessionStart);
-    hdrSession.textContent = d.toLocaleDateString('en-GB') + ' ' + d.toLocaleTimeString('en-GB');
-  }
-}
-
-function showStatus(msg, active) {
-  statusText.textContent = msg;
-  statusDot.classList.toggle('inactive', !active);
-}
-
-btnPlay.addEventListener('click', togglePlay);
-btnPrev.addEventListener('click', () => { stopPlay(); showFrame(state.currentIndex - 1); });
-btnNext.addEventListener('click', () => { stopPlay(); showFrame(state.currentIndex + 1); });
-
-document.querySelectorAll('.speed-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    state.speed = parseFloat(btn.dataset.speed);
-    document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    if (state.playing) { clearTimeout(state.playTimer); scheduleNext(); }
-  });
-});
-
-const track = document.getElementById('timeline-track');
-function seekFromEvent(e) {
-  const rect = track.getBoundingClientRect();
-  const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-  showFrame(Math.round(pct * (state.frames.length - 1)));
-}
-let dragging = false;
-track.addEventListener('mousedown', e => { dragging = true; stopPlay(); seekFromEvent(e); });
-window.addEventListener('mousemove', e => { if (dragging) seekFromEvent(e); });
-window.addEventListener('mouseup',   () => { dragging = false; });
-
-document.addEventListener('keydown', e => {
-  if (e.key === ' ')          { e.preventDefault(); togglePlay(); }
-  if (e.key === 'ArrowLeft')  { stopPlay(); showFrame(state.currentIndex - 1); }
-  if (e.key === 'ArrowRight') { stopPlay(); showFrame(state.currentIndex + 1); }
-  if (e.key === 'Home')       { stopPlay(); showFrame(0); }
-  if (e.key === 'End')        { stopPlay(); showFrame(state.frames.length - 1); }
-});
-
-btnLoad.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', async () => {
-  if (!fileInput.files.length) return;
-  const text = await fileInput.files[0].text();
-  loadManifest(JSON.parse(text), 'screenshots/');
-  fileInput.value = '';
-});
-
-tryAutoLoad();
-// Auto-refresh every 10s to pick up new frames during a live session
-setInterval(tryAutoLoad, 10000);
-</script>
-</body>
-</html>
-"""
 
 CAPTURE_BUTTON_LUA = r"""-- TTS Battlefield Replay — Capture Button
 -- Attach this script to any object in your TTS save.
@@ -700,8 +131,8 @@ STEP 5 — Capture turns
   The app will snap a screenshot automatically.
 
 STEP 6 — View the replay
-  Right-click the tray icon → Open Replay in Browser
-  Use Edge or whitelist localhost in your ad blocker.
+  Right-click the tray icon → Stop Session.
+  A replay.mp4 is automatically compiled and the session folder opens.
 
 NOTE: capture_button.lua is in the same folder as this app.
       You can open it in Notepad to copy its contents.
@@ -727,20 +158,17 @@ _state = {
     "manifest":    None,
     "session_dir": None,
     "tray":        None,
-    "listener":    None,
-    "server":      None,
-    "httpd":       None,
+    "is_first_run": False,   # set True by ensure_assets when config.json is absent
 }
 
 # ── First-run setup ───────────────────────────────────────────────────────────
 
 def ensure_assets():
-    """Write playback.html and capture_button.lua on first run if missing."""
+    """Write capture_button.lua on first run if missing. Flag first-run state."""
     STORE_DIR.mkdir(parents=True, exist_ok=True)
 
-    html_path = STORE_DIR / "playback.html"
-    if not html_path.exists():
-        html_path.write_text(PLAYBACK_HTML, encoding="utf-8")
+    if not CONFIG_FILE.exists():
+        _state["is_first_run"] = True
 
     lua_path = APP_DIR / "capture_button.lua"
     if not lua_path.exists():
@@ -813,27 +241,32 @@ def take_screenshot():
         notify("TTS Replay", "No region set — calibrate first")
         return
 
-    monitor = {k: cfg["region"][k] for k in ("left", "top", "width", "height")}
+    region = cfg["region"]
+    if region.get("width", 0) < 10 or region.get("height", 0) < 10:
+        notify("TTS Replay", "Capture region is too small — please recalibrate")
+        return
+    monitor = {k: region[k] for k in ("left", "top", "width", "height")}
 
-    if _state["manifest"] is None:
-        session_stamp = datetime.now().strftime("session_%Y%m%d_%H%M%S")
-        session_dir   = STORE_DIR / session_stamp
-        session_dir.mkdir(parents=True, exist_ok=True)
-        _state["session_dir"] = session_dir
-        _state["frame_num"]   = 0
-        _state["manifest"]    = {
-            "session_id":    session_stamp,
-            "session_start": datetime.now().isoformat(),
-            "frames":        [],
-        }
-        with open(session_dir / "manifest.json", "w") as f:
-            json.dump(_state["manifest"], f, indent=2)
+    with _state_lock:
+        if _state["manifest"] is None:
+            session_stamp = datetime.now().strftime("session_%Y%m%d_%H%M%S")
+            session_dir   = STORE_DIR / session_stamp
+            session_dir.mkdir(parents=True, exist_ok=True)
+            _state["session_dir"] = session_dir
+            _state["frame_num"]   = 0
+            _state["manifest"]    = {
+                "session_id":    session_stamp,
+                "session_start": datetime.now().isoformat(),
+                "frames":        [],
+            }
+            with open(session_dir / "manifest.json", "w") as f:
+                json.dump(_state["manifest"], f, indent=2)
 
-    session_dir   = _state["session_dir"]
-    manifest_path = session_dir / "manifest.json"
+        session_dir   = _state["session_dir"]
+        manifest_path = session_dir / "manifest.json"
+        ts            = datetime.now()
+        turn          = _state["frame_num"] + 1
 
-    ts       = datetime.now()
-    turn     = _state["frame_num"] + 1
     filename = f"turn_{turn:04d}_{ts.strftime('%H%M%S')}.png"
     filepath = session_dir / filename
 
@@ -843,25 +276,51 @@ def take_screenshot():
 
     stripped = strip_drawing_lines(filepath)
 
-    _state["manifest"]["frames"].append({
-        "filename":  filename,
-        "timestamp": ts.isoformat(),
-        "turn":      turn,
-    })
-    with open(manifest_path, "w") as f:
-        json.dump(_state["manifest"], f, indent=2)
-
-    _state["frame_num"] += 1
-
-    latest = {
-        "session_dir": session_dir.name,
-        "manifest":    session_dir.name + "/manifest.json",
-    }
-    with open(STORE_DIR / "latest.json", "w") as f:
-        json.dump(latest, f, indent=2)
+    with _state_lock:
+        _state["manifest"]["frames"].append({
+            "filename":  filename,
+            "timestamp": ts.isoformat(),
+            "turn":      turn,
+        })
+        with open(manifest_path, "w") as f:
+            json.dump(_state["manifest"], f, indent=2)
+        _state["frame_num"] += 1
 
     tag = " (filtered)" if stripped else ""
     notify("TTS Replay", f"Turn {turn} captured{tag}")
+    _update_tray_menu()   # keep frame counter in tray status line current
+
+# ── Video export ─────────────────────────────────────────────────────────────
+
+def compile_video(session_dir: Path) -> Path | None:
+    """Stitch all turn_*.png frames in order into replay.mp4."""
+    try:
+        import cv2
+    except ImportError:
+        notify("TTS Replay", "cv2 not available — cannot compile video")
+        return None
+
+    frames = sorted(session_dir.glob("turn_*.png"))
+    if not frames:
+        return None
+
+    sample = cv2.imread(str(frames[0]))
+    if sample is None:
+        return None
+    h, w = sample.shape[:2]
+
+    video_path = session_dir / "replay.mp4"
+    fps    = 2   # 2 fps → each turn shown for 0.5 s; adjust to taste
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(video_path), fourcc, fps, (w, h))
+
+    for fp in frames:
+        frame = cv2.imread(str(fp))
+        if frame is not None:
+            writer.write(frame)
+
+    writer.release()
+    return video_path if video_path.exists() else None
 
 # ── TTS TCP listener ──────────────────────────────────────────────────────────
 
@@ -891,7 +350,7 @@ def _listener_thread():
         try:
             data = b""
             conn.settimeout(2.0)
-            while True:
+            while len(data) < 65536:     # 64 KB cap — TTS messages are tiny
                 chunk = conn.recv(4096)
                 if not chunk:
                     break
@@ -929,33 +388,28 @@ def start_listening():
     _state["session_dir"] = None
     _state["frame_num"]   = 0
     threading.Thread(target=_listener_thread, daemon=True).start()
-    _update_tray_menu()
+    _update_tray_menu()   # also refreshes icon to green
 
 def stop_listening():
     if not _state["listening"]:
         return
     _state["listening"] = False
     _update_tray_menu()
-    notify("TTS Replay", "Session stopped")
 
-# ── HTTP server ───────────────────────────────────────────────────────────────
+    session_dir = _state.get("session_dir")
+    if session_dir and _state.get("frame_num", 0) > 0:
+        def _compile():
+            notify("TTS Replay", f"Compiling {_state['frame_num']} frames into video…")
+            video_path = compile_video(session_dir)
+            if video_path:
+                notify("TTS Replay", f"Saved: {video_path.name}  —  opening folder")
+                os.startfile(str(session_dir))   # Open session folder in Explorer
+            else:
+                notify("TTS Replay", "Video compile failed — no valid frames found")
+        threading.Thread(target=_compile, daemon=True).start()
+    else:
+        notify("TTS Replay", "Session stopped (no frames captured)")
 
-def _server_thread():
-    os.chdir(STORE_DIR)
-
-    class QuietHandler(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, *a): pass
-
-    httpd = socketserver.TCPServer(("", SERVER_PORT), QuietHandler)
-    _state["httpd"] = httpd
-    httpd.serve_forever()
-
-def ensure_server():
-    if _state["server"] and _state["server"].is_alive():
-        return
-    t = threading.Thread(target=_server_thread, daemon=True)
-    t.start()
-    _state["server"] = t
 
 # ── Calibration ───────────────────────────────────────────────────────────────
 
@@ -994,8 +448,12 @@ def _run_calibrate():
             )
 
     def on_release(e):
+        if s["start"] is None:
+            return
         x0, y0 = s["start"]
         x1, y1 = e.x, e.y
+        if abs(x1 - x0) < 10 or abs(y1 - y0) < 10:
+            return   # Ignore accidental single-pixel clicks
         result["region"] = {
             "left":   min(x0, x1), "top":    min(y0, y1),
             "width":  abs(x1 - x0), "height": abs(y1 - y0),
@@ -1014,111 +472,393 @@ def _run_calibrate():
         cfg = load_config()
         cfg["region"] = result["region"]
         save_config(cfg)
-        notify("TTS Replay", "Region saved ✓  —  you can now Start Session")
+        notify("TTS Replay", "Region saved — check the preview window!")
+        _show_region_preview(result["region"])
     else:
         notify("TTS Replay", "Calibration cancelled")
 
 def do_calibrate():
     threading.Thread(target=_run_calibrate, daemon=True).start()
 
-# ── Show setup instructions ───────────────────────────────────────────────────
+# ── Setup Wizard ─────────────────────────────────────────────────────────────
 
-def do_show_instructions():
+WIZARD_STEPS = [
+    {
+        "title": "Welcome to TTS Battlefield Replay!",
+        "emoji": "🎮",
+        "body": (
+            "This app records your Tabletop Simulator battles turn-by-turn "
+            "and compiles them into a video so you can relive the carnage.\n\n"
+            "Setup takes about 2 minutes and you only ever have to do it once.\n\n"
+            "Click Next to get started!"
+        ),
+        "action_label": None,
+    },
+    {
+        "title": "Step 1 — Enable TTS External API",
+        "emoji": "🔌",
+        "body": (
+            "In Tabletop Simulator, open the menu and go to:\n\n"
+            "    Configuration  →  External Editor API\n\n"
+            "Make sure it is turned ON.\n"
+            "The port should be 39998 (the default — don't change it).\n\n"
+            "This lets the app talk to TTS."
+        ),
+        "action_label": None,
+    },
+    {
+        "title": "Step 2 — Add the Capture Button to TTS",
+        "emoji": "📋",
+        "body": (
+            "In TTS, right-click any small object (a coin or token works great).\n\n"
+            "Choose:  Scripting  →  open the Lua editor\n\n"
+            "Click the button below to copy the Lua script to your clipboard, "
+            "then paste it into the TTS Lua editor and click  Save & Play.\n\n"
+            "A  📷 CAPTURE  button will appear on the object."
+        ),
+        "action_label": "📋  Copy Lua Script to Clipboard",
+    },
+    {
+        "title": "Step 3 — Calibrate the Capture Region",
+        "emoji": "🎯",
+        "body": (
+            "Now tell the app which part of your screen is the battlefield.\n\n"
+            "Click the button below, then drag a rectangle over your "
+            "battlefield area.\n\n"
+            "Tip: include a little border around the board so nothing gets "
+            "cut off at the edges."
+        ),
+        "action_label": "🎯  Calibrate Region Now",
+    },
+    {
+        "title": "Step 4 — You're Ready to Play!",
+        "emoji": "✅",
+        "body": (
+            "Setup is complete. Here's how to use it each game:\n\n"
+            "  1.  Right-click the tray icon  →  Start Session\n"
+            "  2.  Play your game normally\n"
+            "  3.  Press  📷 CAPTURE  in TTS at the end of each turn\n"
+            "  4.  When the game ends, right-click the tray  →  Stop Session\n"
+            "  5.  Your  replay.mp4  is compiled automatically!\n\n"
+            "The tray icon turns green while recording is active."
+        ),
+        "action_label": None,
+    },
+]
+
+def do_show_instructions(start_step: int = 0):
     import tkinter as tk
-    from tkinter import scrolledtext
 
     def _run():
+        step_idx = [start_step]
+
         root = tk.Tk()
-        root.title("TTS Replay — Setup Instructions")
-        root.geometry("620x500")
-        root.resizable(True, True)
-        root.configure(bg="#0a0c0f")
+        root.title("TTS Replay — Setup Guide")
+        root.geometry("560x420")
+        root.resizable(False, False)
+        root.configure(bg="#1a1e26")
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after(200, lambda: root.attributes("-topmost", False))
 
-        txt = scrolledtext.ScrolledText(
-            root, wrap=tk.WORD, font=("Consolas", 10),
-            bg="#0a0c0f", fg="#c8d4e0", insertbackground="white",
-            relief="flat", padx=16, pady=16
-        )
-        txt.pack(fill="both", expand=True)
-        txt.insert(tk.END, SETUP_INSTRUCTIONS)
-        txt.configure(state="disabled")
+        # ── Header bar ──────────────────────────────────────────────────────
+        header = tk.Frame(root, bg="#c8391a", height=6)
+        header.pack(fill="x")
 
-        btn = tk.Button(
-            root, text="Open capture_button.lua",
-            command=lambda: os.startfile(str(APP_DIR / "capture_button.lua")),
-            bg="#c8391a", fg="white", relief="flat",
-            font=("Consolas", 10, "bold"), pady=8
+        # ── Step indicator dots ──────────────────────────────────────────────
+        dot_frame = tk.Frame(root, bg="#1a1e26", pady=12)
+        dot_frame.pack(fill="x")
+        dot_labels = []
+        for i in range(len(WIZARD_STEPS)):
+            d = tk.Label(dot_frame, text="●", bg="#1a1e26",
+                         font=("Segoe UI", 10))
+            d.pack(side="left", padx=4, expand=True)
+            dot_labels.append(d)
+
+        # ── Emoji + title ───────────────────────────────────────────────────
+        emoji_lbl = tk.Label(root, text="", bg="#1a1e26",
+                             font=("Segoe UI Emoji", 36))
+        emoji_lbl.pack(pady=(0, 4))
+
+        title_lbl = tk.Label(root, text="", bg="#1a1e26", fg="#ffffff",
+                             font=("Segoe UI", 14, "bold"),
+                             wraplength=500, justify="center")
+        title_lbl.pack(padx=24)
+
+        # ── Body text ────────────────────────────────────────────────────────
+        body_lbl = tk.Label(root, text="", bg="#1a1e26", fg="#b0bec5",
+                            font=("Segoe UI", 10),
+                            wraplength=500, justify="left")
+        body_lbl.pack(padx=28, pady=12, fill="both", expand=True)
+
+        # ── Action button (step-specific) ────────────────────────────────────
+        action_btn = tk.Button(
+            root, text="", bg="#2a3040", fg="#ffffff",
+            font=("Segoe UI", 10, "bold"), relief="flat",
+            padx=12, pady=6, cursor="hand2",
+            activebackground="#374055", activeforeground="#ffffff",
         )
-        btn.pack(fill="x", padx=16, pady=(0, 16))
+        action_btn.pack(padx=28, pady=(0, 8), fill="x")
+
+        # ── Navigation bar ───────────────────────────────────────────────────
+        nav = tk.Frame(root, bg="#111418", pady=10)
+        nav.pack(fill="x", side="bottom")
+
+        back_btn = tk.Button(nav, text="← Back", bg="#111418", fg="#5a6878",
+                             font=("Segoe UI", 10), relief="flat",
+                             padx=16, cursor="hand2",
+                             activebackground="#1a1e26", activeforeground="#c8d4e0")
+        back_btn.pack(side="left", padx=16)
+
+        next_btn = tk.Button(nav, text="Next →", bg="#c8391a", fg="#ffffff",
+                             font=("Segoe UI", 10, "bold"), relief="flat",
+                             padx=20, pady=6, cursor="hand2",
+                             activebackground="#e04020", activeforeground="#ffffff")
+        next_btn.pack(side="right", padx=16)
+
+        def render(idx):
+            step = WIZARD_STEPS[idx]
+            emoji_lbl.config(text=step["emoji"])
+            title_lbl.config(text=step["title"])
+            body_lbl.config(text=step["body"])
+
+            # Dot colours
+            for i, d in enumerate(dot_labels):
+                if i < idx:
+                    d.config(fg="#c8391a")
+                elif i == idx:
+                    d.config(fg="#ffffff")
+                else:
+                    d.config(fg="#2a3040")
+
+            # Action button
+            if step["action_label"]:
+                action_btn.config(text=step["action_label"], state="normal")
+                action_btn.pack(padx=28, pady=(0, 8), fill="x")
+                if "Clipboard" in step["action_label"]:
+                    action_btn.config(command=_copy_lua)
+                elif "Calibrate" in step["action_label"]:
+                    action_btn.config(command=lambda: (do_calibrate(), notify(
+                        "TTS Replay", "Drag your rectangle over the battlefield!")))
+            else:
+                action_btn.pack_forget()
+
+            # Nav buttons
+            back_btn.config(state="normal" if idx > 0 else "disabled",
+                            fg="#c8d4e0" if idx > 0 else "#2a3040")
+            if idx == len(WIZARD_STEPS) - 1:
+                next_btn.config(text="✓  Done", bg="#2dce6a",
+                                command=root.destroy)
+            else:
+                next_btn.config(text="Next →", bg="#c8391a",
+                                command=lambda: go(idx + 1))
+
+        def go(idx):
+            step_idx[0] = idx
+            render(idx)
+
+        def _copy_lua():
+            try:
+                root.clipboard_clear()
+                root.clipboard_append(CAPTURE_BUTTON_LUA)
+                root.update()
+                action_btn.config(text="✓  Copied! Now paste into TTS Lua editor",
+                                  bg="#2dce6a")
+                root.after(3000, lambda: action_btn.config(
+                    text=WIZARD_STEPS[step_idx[0]]["action_label"], bg="#2a3040"))
+            except Exception:
+                action_btn.config(text="⚠  Could not access clipboard", bg="#e8a020")
+
+        back_btn.config(command=lambda: go(step_idx[0] - 1))
+
+        render(start_step)
+        root.mainloop()
+
+    threading.Thread(target=_run, daemon=True).start()
+
+# ── Calibration preview ───────────────────────────────────────────────────────
+
+def _show_region_preview(region: dict):
+    """Show a small preview of the calibrated capture region."""
+    import tkinter as tk
+    try:
+        import mss
+        from PIL import Image, ImageTk
+    except ImportError:
+        return
+
+    def _run():
+        monitor = {k: region[k] for k in ("left", "top", "width", "height")}
+        with mss.mss() as sct:
+            raw = sct.grab(monitor)
+            img = Image.frombytes("RGB", raw.size, raw.rgb)
+
+        # Scale preview to max 480px wide
+        max_w = 480
+        scale = min(1.0, max_w / img.width)
+        pw = int(img.width * scale)
+        ph = int(img.height * scale)
+        img = img.resize((pw, ph), Image.LANCZOS)
+
+        root = tk.Tk()
+        root.title("Calibration Preview — does this look right?")
+        root.configure(bg="#1a1e26")
+        root.resizable(False, False)
+        root.lift()
+        root.attributes("-topmost", True)
+        root.after(200, lambda: root.attributes("-topmost", False))
+
+        tk.Label(root, text="Is this your battlefield?",
+                 bg="#1a1e26", fg="#ffffff",
+                 font=("Segoe UI", 12, "bold")).pack(pady=(12, 4))
+        tk.Label(root, text="If it looks wrong, click Redo to drag again.",
+                 bg="#1a1e26", fg="#b0bec5",
+                 font=("Segoe UI", 9)).pack(pady=(0, 8))
+
+        photo = ImageTk.PhotoImage(img)
+        img_lbl = tk.Label(root, image=photo, bg="#000000",
+                           relief="flat", bd=2)
+        img_lbl.image = photo
+        img_lbl.pack(padx=16, pady=4)
+
+        btn_frame = tk.Frame(root, bg="#1a1e26")
+        btn_frame.pack(pady=12, fill="x", padx=16)
+
+        tk.Button(btn_frame, text="✓  Looks Good!", bg="#2dce6a", fg="#000000",
+                  font=("Segoe UI", 10, "bold"), relief="flat",
+                  padx=16, pady=6, cursor="hand2",
+                  command=root.destroy).pack(side="left", expand=True, fill="x", padx=(0, 6))
+
+        def redo():
+            root.destroy()
+            do_calibrate()
+
+        tk.Button(btn_frame, text="↺  Redo", bg="#2a3040", fg="#ffffff",
+                  font=("Segoe UI", 10), relief="flat",
+                  padx=16, pady=6, cursor="hand2",
+                  command=redo).pack(side="left", expand=True, fill="x", padx=(6, 0))
 
         root.mainloop()
 
     threading.Thread(target=_run, daemon=True).start()
 
-# ── Clean existing frames ─────────────────────────────────────────────────────
+# ── Fix screenshot glitches ───────────────────────────────────────────────────
 
 def do_clean():
     def _run():
         search_dir = _state.get("session_dir") or STORE_DIR
         frames     = sorted(search_dir.glob("turn_*.png")) or sorted(search_dir.glob("frame_*.png"))
         if not frames:
-            notify("TTS Replay", "No frames found to clean")
+            notify("TTS Replay", "No screenshots found to fix in the current session")
             return
+        notify("TTS Replay", f"Fixing {len(frames)} screenshot(s)… please wait")
         changed = sum(1 for fp in frames if strip_drawing_lines(fp))
-        notify("TTS Replay", f"Clean done: {changed}/{len(frames)} frames modified")
+        notify("TTS Replay", f"Done! {changed} of {len(frames)} screenshot(s) were cleaned up")
     threading.Thread(target=_run, daemon=True).start()
 
 # ── Tray icon ─────────────────────────────────────────────────────────────────
 
-def _make_icon():
+def _make_icon(recording: bool = False):
     from PIL import Image, ImageDraw
     img  = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-    draw.ellipse([4, 4, 60, 60],   outline="#c8391a", width=5)
-    draw.ellipse([20, 20, 44, 44], fill="#c8391a")
+    if recording:
+        # Solid green circle = actively recording
+        draw.ellipse([4, 4, 60, 60],   fill="#2dce6a", outline="#1aaa50", width=3)
+        draw.ellipse([22, 22, 42, 42], fill="#ffffff")
+    else:
+        # Red ring = idle
+        draw.ellipse([4, 4, 60, 60],   outline="#c8391a", width=5)
+        draw.ellipse([20, 20, 44, 44], fill="#c8391a")
     return img
+
+def _refresh_icon():
+    """Swap the tray icon to reflect current recording state."""
+    if _state["tray"]:
+        _state["tray"].icon = _make_icon(recording=_state["listening"])
 
 def _build_menu():
     import pystray
     listening  = _state["listening"]
     has_region = "region" in load_config()
+    frame_num  = _state.get("frame_num", 0)
+
+    if listening:
+        status_label = f"● RECORDING  —  {frame_num} frame{'s' if frame_num != 1 else ''} captured"
+    else:
+        if not has_region:
+            status_label = "○ Not set up  —  open Setup Guide first"
+        else:
+            status_label = "○ Ready  —  Start Session to begin recording"
+
+    start_stop_label   = "■  Stop Session  (compiles video)" if listening else "▶  Start Session"
+    start_stop_tooltip = (
+        "Stop recording and compile replay.mp4" if listening
+        else ("Start recording this game session" if has_region
+              else "Calibrate your region first before starting")
+    )
 
     return pystray.Menu(
-        pystray.MenuItem(
-            "● ACTIVE — waiting for TTS" if listening else "○ Stopped",
-            None, enabled=False
-        ),
-        pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Calibrate Region",     lambda icon, item: do_calibrate()),
+        pystray.MenuItem(status_label, None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(
-            "Stop Session" if listening else "Start Session",
+            start_stop_label,
             lambda icon, item: stop_listening() if _state["listening"] else start_listening(),
-            enabled=has_region
+            enabled=has_region,
         ),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Open Replay in Browser", lambda icon, item: _open_replay()),
-        pystray.MenuItem("Clean Existing Frames",  lambda icon, item: do_clean()),
+        pystray.MenuItem("🎯  Calibrate Region",
+                         lambda icon, item: do_calibrate(),
+                         ),
+        pystray.MenuItem("🔧  Fix Screenshot Glitches",
+                         lambda icon, item: do_clean(),
+                         ),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Setup Instructions",     lambda icon, item: do_show_instructions()),
+        pystray.MenuItem("📖  Setup Guide",
+                         lambda icon, item: do_show_instructions()),
         pystray.Menu.SEPARATOR,
-        pystray.MenuItem("Exit",                   lambda icon, item: _exit_app()),
+        pystray.MenuItem("Exit", lambda icon, item: _exit_app()),
     )
 
 def _update_tray_menu():
     if _state["tray"]:
         _state["tray"].menu = _build_menu()
-
-def _open_replay():
-    ensure_server()
-    time.sleep(0.4)
-    webbrowser.open(f"http://localhost:{SERVER_PORT}/playback.html")
+    _refresh_icon()
 
 def _exit_app():
-    _state["listening"] = False
-    if _state.get("httpd"):
-        threading.Thread(target=_state["httpd"].shutdown, daemon=True).start()
-    _state["tray"].stop()
+    """Warn before exiting if a session is active with unsaved frames."""
+    if _state["listening"] and _state.get("frame_num", 0) > 0:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        def _ask():
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes("-topmost", True)
+            answer = messagebox.askyesnocancel(
+                "TTS Replay — Exit?",
+                f"You have {_state['frame_num']} captured frame(s) in an active session.\n\n"
+                "Do you want to compile them into a video before exiting?\n\n"
+                "  Yes   → compile video, then exit\n"
+                "  No    → exit without saving\n"
+                "  Cancel → go back",
+                icon="warning",
+            )
+            root.destroy()
+
+            if answer is True:       # Yes — compile then exit
+                stop_listening()
+                time.sleep(3)        # Give compile thread a moment to start
+                _state["tray"].stop()
+            elif answer is False:    # No — exit immediately
+                _state["listening"] = False
+                _state["tray"].stop()
+            # Cancel → do nothing
+
+        threading.Thread(target=_ask, daemon=True).start()
+    else:
+        _state["listening"] = False
+        _state["tray"].stop()
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -1134,10 +874,17 @@ if __name__ == "__main__":
 
     icon = pystray.Icon(
         name  = "TTS Replay",
-        icon  = _make_icon(),
+        icon  = _make_icon(recording=False),
         title = "TTS Battlefield Replay",
         menu  = _build_menu(),
     )
     _state["tray"] = icon
-    ensure_server()
+
+    # On first run, automatically open the setup wizard after the tray is ready
+    if _state["is_first_run"]:
+        def _first_run_welcome():
+            time.sleep(1.5)   # Let the tray icon settle first
+            do_show_instructions(start_step=0)
+        threading.Thread(target=_first_run_welcome, daemon=True).start()
+
     icon.run()

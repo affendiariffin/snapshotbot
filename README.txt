@@ -1,8 +1,8 @@
 TTS BATTLEFIELD REPLAY
 ======================
 Automatically captures top-down screenshots of your Tabletop Simulator
-battlefield at the end of each turn, then lets you play them back as a
-timelapse in your browser.
+battlefield at the end of each turn, then compiles them into a timelapse
+video (replay.mp4) when your session ends.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 QUICK START
@@ -10,34 +10,27 @@ QUICK START
 
 1. Double-click TTS_Replay.exe
    → A red icon appears in your system tray (bottom-right of taskbar)
-   → A "TTS Replay Sessions" folder is created next to the exe
+   → The Setup Guide opens automatically on first run — just follow it!
 
-2. Add the capture button to TTS  (one-time setup)
-   → Open capture_button.lua in Notepad (also created next to the exe)
-   → In TTS, right-click any small object → Scripting
-   → Paste the Lua code → Save & Play
-   → A 📷 CAPTURE button appears on the object
+   The guide walks you through every step. You only need to do it once.
+   To open it again any time: right-click the tray icon → Setup Guide.
 
-3. Enable TTS External Editor API  (one-time)
-   → TTS menu → Configuration → External Editor API → Enable
-   → Port must be 39998 (the default)
-
-4. Calibrate the capture region
-   → Right-click tray icon → Calibrate Region
-   → Drag a rectangle over your battlefield area on screen
-   → Release to save
-
-5. Start a session
-   → Right-click tray icon → Start Session
-
-6. Play your game!
+2. Play your game
+   → Right-click tray icon → ▶ Start Session  (icon turns GREEN)
    → Press 📷 CAPTURE in TTS at the end of each turn
-   → The app automatically snaps a screenshot
+   → The frame count in the tray menu updates as you go
 
-7. Watch the replay
-   → Right-click tray icon → Open Replay in Browser
-   → Use Microsoft Edge, or whitelist "localhost" in your ad blocker
-   → Controls: Space = play/pause, ← → = step, Home/End = first/last frame
+3. Get your video
+   → Right-click tray icon → ■ Stop Session
+   → replay.mp4 is compiled automatically
+   → Your session folder opens in Explorer — just double-click the video!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TRAY ICON COLOURS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  🔴  Red  = idle / not recording
+  🟢  Green = actively recording — captures will be saved
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TIPS
@@ -46,32 +39,42 @@ TIPS
 • Sessions are saved in "TTS Replay Sessions\" next to the exe.
   Each session is its own folder — old sessions are never deleted.
 
-• The app filters out TTS drawing lines (rulers, measurement circles)
-  from screenshots automatically.
+• After calibrating, a preview window shows you exactly what the
+  app will capture. Click Redo if it looks wrong.
 
-• If a screenshot looks wrong, use "Clean Existing Frames" from the
-  tray menu to reprocess the current session.
+• The replay video plays at 2 frames per second (each turn = 0.5s).
+  To change speed: open capture.pyw in Notepad, find  fps = 2  and
+  change the number.
 
-• The replay page auto-refreshes every 10 seconds during a live session,
-  so you can have it open on a second monitor while you play.
+• If screenshots show ruler lines or measurement circles, use
+  "🔧 Fix Screenshot Glitches" from the tray menu.
 
-• Windows Defender may show a warning the first time you run the exe
-  (because it's unsigned). Click "More info" → "Run anyway".
+• If you try to close the app mid-session, it will ask whether you
+  want to save the video first — so you won't lose any frames.
+
+• Windows Defender may warn you the first time (unsigned exe).
+  Click "More info" → "Run anyway" — it's safe.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 TROUBLESHOOTING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
   "Cannot bind port 39998"
-  → TTS is already running and has the port open. Start the tray app
-    BEFORE launching TTS, or restart TTS after starting the tray app.
+  → TTS is already open and owns the port. Start TTS Replay FIRST,
+    then launch TTS. Or restart TTS after starting the tray app.
 
-  Replay page shows "ERROR"
-  → Make sure you opened it via the tray icon (not by double-clicking
-    the HTML file). URL must be http://localhost:8080/playback.html
+  "Start Session" is greyed out
+  → You need to calibrate your capture region first.
+    Right-click the tray icon → 🎯 Calibrate Region.
 
-  Screenshots are blank or wrong area
-  → Recalibrate: tray icon → Calibrate Region
+  Video does not compile / "no valid frames found"
+  → The session had no captures. Make sure you pressed 📷 CAPTURE
+    at least once while the session was active (icon was green).
 
-  Ad blocker blocks images
-  → Use Microsoft Edge, or add "localhost" to your ad blocker's whitelist
+  Screenshots are blank or show the wrong area
+  → Right-click tray → 🎯 Calibrate Region and drag again.
+    Make sure TTS is NOT in exclusive fullscreen mode.
+
+  replay.mp4 won't open
+  → Install VLC (free). Windows Media Player may not support the
+    codec used by the app. https://www.videolan.org/vlc/
