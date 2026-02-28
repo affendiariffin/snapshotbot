@@ -63,8 +63,6 @@ local TOP_DOWN_DISTANCE = 40
 -- ─────────────────────────────────────────────────────────────────────────────
 
 function onLoad()
-    self.setScale({0.3, 0.3, 0.3})
-
     self.createButton({
         label          = "📷 CAPTURE",
         click_function = "doCapture",

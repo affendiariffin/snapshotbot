@@ -12,7 +12,7 @@ echo.
 
 :: Install / upgrade required packages
 echo  [1/3] Installing Python dependencies...
-pip install --upgrade pyinstaller mss Pillow pystray opencv-python-headless numpy
+python -m pip install --upgrade pyinstaller mss Pillow pystray opencv-python-headless numpy
 if errorlevel 1 (
     echo.
     echo  ERROR: pip install failed. Is Python installed and on PATH?
@@ -22,7 +22,7 @@ if errorlevel 1 (
 
 echo.
 echo  [2/3] Building TTS_Replay.exe with PyInstaller...
-pyinstaller TTS_Replay.spec --noconfirm
+python -m PyInstaller TTS_Replay.spec --noconfirm
 if errorlevel 1 (
     echo.
     echo  ERROR: PyInstaller build failed. See output above.
