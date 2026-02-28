@@ -2,10 +2,6 @@
 -- Attach this script to any object in your TTS save.
 -- Right-click object → Scripting → paste → Save & Play.
 --
--- BUTTONS:
---   📷 CAPTURE   — single manual capture (snap top-down, grab, restore camera)
---   ⏺ START REC  — auto-captures every CAPTURE_INTERVAL seconds until TTS closes
---
 -- Set TOP_DOWN_POSITION to the centre of your battlefield (X, Y, Z).
 -- Set TOP_DOWN_DISTANCE to control zoom — increase for larger boards.
 -- Set CAPTURE_INTERVAL to change how often auto-capture fires (seconds).
@@ -22,20 +18,21 @@ local CAPTURE_INTERVAL   = 60    -- seconds between auto-captures
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local recording       = false
-local recorder_color  = nil   -- player color that clicked START REC
-local loop_timer      = nil
+local recorder_color  = nil
+local capturing       = false   -- true while a capture sequence is in flight
 
 -- ─────────────────────────────────────────────────────────────────────────────
 
-function onLoad()
-    self.setScale({0.3, 0.3, 0.3})
+-- Button indices (TTS assigns them in creation order, 0-based)
+local BTN_CAPTURE = 0
+local BTN_REC     = 1
 
-    -- Manual single capture
+function onLoad()
     self.createButton({
         label          = "📷 CAPTURE",
         click_function = "doCapture",
         function_owner = self,
-        position       = {0, 0.5, -1.2},
+        position       = {0, 0.1, -0.5},
         rotation       = {0, 0, 0},
         width          = 900,
         height         = 280,
@@ -45,87 +42,83 @@ function onLoad()
         tooltip        = "Capture this moment",
     })
 
-    -- Start auto-record loop
     self.createButton({
         label          = "⏺ START REC",
-        click_function = "doStartRec",
+        click_function = "doToggleRec",
         function_owner = self,
-        position       = {0, 0.5, 1.2},
+        position       = {0, 0.1, 0.5},
         rotation       = {0, 0, 0},
         width          = 900,
         height         = 280,
         font_size      = 110,
         color          = {0.1, 0.1, 0.1},
         font_color     = {0.9, 0.2, 0.2},
-        tooltip        = "Auto-capture every " .. CAPTURE_INTERVAL .. "s (runs until you exit TTS)",
+        tooltip        = "Auto-capture every " .. CAPTURE_INTERVAL .. "s",
     })
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Shared capture sequence: save camera → snap top-down → signal Python → restore
--- ─────────────────────────────────────────────────────────────────────────────
 
-function runCaptureSequence(player_color)
+local function runSequence(player_color, action_name)
+    if capturing then return end
     local player = Player[player_color]
     if player == nil then return end
 
-    -- Save current camera state so we can restore it afterwards
-    local saved_position = player.getHandTransform() -- positional reference
-    local saved_mode     = "ThirdPerson"             -- we always restore to ThirdPerson
-
-    -- Snap to top-down
+    capturing = true
     player.setCameraMode("TopDown")
     player.lookAt({
         position = TOP_DOWN_POSITION,
         pitch    = 90,
-        yaw      = 0,
         distance = TOP_DOWN_DISTANCE,
     })
 
-    -- Wait for camera to settle, then signal Python
     Wait.time(function()
-        sendExternalMessage({ action = "capture" })
-
-        -- Restore camera after Python has had time to grab the screenshot
+        sendExternalMessage({ action = action_name })
         Wait.time(function()
-            player.setCameraMode(saved_mode)
+            player.setCameraMode("ThirdPerson")
+            capturing = false
         end, 0.8)
-
     end, 1.0)
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- CAPTURE button — single manual grab
--- ─────────────────────────────────────────────────────────────────────────────
 
 function doCapture(obj, player_color, alt_click)
-    runCaptureSequence(player_color)
+    -- Blocked while auto-rec is mid-sequence to avoid camera conflicts
+    if not capturing then
+        runSequence(player_color, "capture")
+    end
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- START REC button — fires immediately, then loops every CAPTURE_INTERVAL secs
--- ─────────────────────────────────────────────────────────────────────────────
 
-function doStartRec(obj, player_color, alt_click)
+function doToggleRec(obj, player_color, alt_click)
     if recording then
-        -- Already running — notify the clicker and ignore
-            return
+        -- Stop recording
+        recording = false
+        self.editButton({
+            index      = BTN_REC,
+            label      = "⏺ START REC",
+            font_color = {0.9, 0.2, 0.2},
+        })
+    else
+        -- Start recording
+        recording      = true
+        recorder_color = player_color
+        self.editButton({
+            index      = BTN_REC,
+            label      = "⏹ STOP REC",
+            font_color = {1, 0.4, 0.0},
+        })
+        runSequence(recorder_color, "capture_auto")
+        scheduleNextCapture()
     end
-
-    recording      = true
-    recorder_color = player_color
-
-    -- Fire the first capture immediately
-    runCaptureSequence(recorder_color)
-
-    -- Then schedule the repeating loop
-    scheduleNextCapture()
 end
 
 function scheduleNextCapture()
-    loop_timer = Wait.time(function()
+    Wait.time(function()
         if not recording then return end
-        runCaptureSequence(recorder_color)
-        scheduleNextCapture()   -- re-schedule for the next interval
+        runSequence(recorder_color, "capture_auto")
+        scheduleNextCapture()
     end, CAPTURE_INTERVAL)
 end

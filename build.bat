@@ -12,7 +12,7 @@ echo.
 
 :: Install / upgrade required packages
 echo  [1/3] Installing Python dependencies...
-python -m pip install --upgrade pyinstaller mss Pillow pystray opencv-python-headless numpy
+python -m pip install --upgrade pyinstaller mss Pillow
 if errorlevel 1 (
     echo.
     echo  ERROR: pip install failed. Is Python installed and on PATH?
