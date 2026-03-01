@@ -60,24 +60,11 @@ end
 -- Data collection — hardcoded GUIDs from Global (see global Lua script)
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local SCORESHEET_GUID         = "06d627"
-local DEPLOYMENT_ZONE_GUID    = "dcf95b"
-local PRIMARY_ZONE_GUID       = "740abc"
-local CHALLENGER_ZONE_GUID    = "cdecf2"
-local SEC_P1_1_ZONE_GUID      = "0ec215"   -- Player 1 (Red) secondary slot 1
-local SEC_P1_2_ZONE_GUID      = "d865d4"   -- Player 1 (Red) secondary slot 2
-local SEC_P2_1_ZONE_GUID      = "3c8d71"   -- Player 2 (Blue) secondary slot 1
-local SEC_P2_2_ZONE_GUID      = "88cac4"   -- Player 2 (Blue) secondary slot 2
+local SCORESHEET_GUID = "06d627"
 
-local function zoneCardName(guid)
-    local zone = getObjectFromGUID(guid)
-    if not zone then return nil end
-    local objs = zone.getObjects()
-    if #objs == 0 then return nil end
-    local name = objs[1].getName()
-    if name == "" then return nil end
-    return name
-end
+-- Route all data collection through the scoresheet object, which owns the zone
+-- references. Calling getObjects() on zones from a foreign script causes a TTS
+-- cross-script ownership error.
 
 local function getScores()
     local sheet = getObjectFromGUID(SCORESHEET_GUID)
@@ -88,17 +75,11 @@ local function getScores()
 end
 
 local function getCards()
-    return {
-        deployment = zoneCardName(DEPLOYMENT_ZONE_GUID),
-        primary    = zoneCardName(PRIMARY_ZONE_GUID),
-        challenger = zoneCardName(CHALLENGER_ZONE_GUID),
-        -- Player 1 (Red) secondaries
-        p1_sec1    = zoneCardName(SEC_P1_1_ZONE_GUID),
-        p1_sec2    = zoneCardName(SEC_P1_2_ZONE_GUID),
-        -- Player 2 (Blue) secondaries
-        p2_sec1    = zoneCardName(SEC_P2_1_ZONE_GUID),
-        p2_sec2    = zoneCardName(SEC_P2_2_ZONE_GUID),
-    }
+    local sheet = getObjectFromGUID(SCORESHEET_GUID)
+    if not sheet then return nil end
+    local ok, result = pcall(function() return sheet.call("getCardData") end)
+    if ok then return result end
+    return nil
 end
 
 local function runSequence(player_color, action_name)

@@ -1,7 +1,8 @@
-"""
-TTS Battlefield Replay — System Tray App
-=========================================
-Double-click to start. A tray icon appears in the Windows system tray.
+"""TTS Battlefield Replay — capture.pyw
+
+Listens for capture signals from a TTS Lua script, takes screenshots of a
+calibrated screen region, strips drawing lines, and compiles a self-contained
+HTML replay file when the session ends.
 
 A small window sits on the taskbar with session controls.
 
@@ -9,43 +10,60 @@ Requirements (for running from source):
   pip install mss Pillow opencv-python-headless numpy
 """
 
-import sys
-import os
 import json
-import time
+import os
 import socket
+import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
-# ── Thread safety ────────────────────────────────────────────────────────────────
+# ── Paths ─────────────────────────────────────────────────────────────────────
+
+APP_DIR     = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+STORE_DIR   = APP_DIR / "TTS Replay Sessions"
+CONFIG_FILE = APP_DIR / "replay_config.json"
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+
+TTS_LISTEN_PORT        = 39998   # TTS External Editor API — TTS is the server
+TTS_RECONNECT_INTERVAL = 3       # seconds between connection attempts
+
+CAMERA_SETTLE_MS    = 500   # ms to wait before first stability sample
+STABILITY_POLL_MS   = 150   # ms between samples
+STABILITY_MAX_POLLS = 8     # give up after this many unstable polls
+STABILITY_THRESHOLD = 0.995 # fraction of pixels that must match to call it stable
+
+# ── Drawing-line exact RGB values ─────────────────────────────────────────────
+# Each entry is (label, (R, G, B)).
+
+DRAWING_COLORS_RGB = [
+    ("red",    (218,  22,  22)),
+    ("blue",   ( 28, 135, 255)),
+    ("teal",   ( 34, 177, 155)),
+    ("purple", (255,   0, 255)),
+]
+
+# Per-channel tolerance for PNG compression rounding.  0 = pixel-perfect.
+RGB_TOLERANCE  = 4
+INPAINT_RADIUS = 5
+
+# ── Shared app state ──────────────────────────────────────────────────────────
+
 _state_lock = threading.Lock()
-
-# ── Paths (dynamic — works from .py or compiled .exe) ─────────────────────────
-
-def _app_dir() -> Path:
-    """Directory containing the exe (or the .py script when run from source)."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).parent
-
-APP_DIR    = _app_dir()
-STORE_DIR  = APP_DIR / "TTS Replay Sessions"
-CONFIG_FILE = APP_DIR / "config.json"
-
-# How long to wait after the TTS signal before the first sample (ms)
-TTS_LISTEN_PORT  = 39998   # TTS External Editor API port — TTS owns this as server
-CAMERA_SETTLE_MS   = 500
-# How long to wait between stability samples (ms)
-STABILITY_POLL_MS  = 150
-# Maximum number of samples before giving up and using whatever we have
-STABILITY_MAX_POLLS = 8
-# Fraction of pixels that must be identical between two samples to call it stable.
-# 0.995 = 99.5% match — allows for minor HUD flicker without looping forever.
-STABILITY_THRESHOLD = 0.995
+_state = {
+    "listening":   False,
+    "frame_num":   0,
+    "manifest":    None,
+    "session_dir": None,
+    "window":      None,
+    "status_var":  None,
+    "btn_session": None,
+    "indicator":   None,
+}
 
 # ── Embedded assets ───────────────────────────────────────────────────────────
-
 
 CAPTURE_BUTTON_LUA = r"""-- TTS Battlefield Replay — Capture Button
 -- Attach this script to any object in your TTS save.
@@ -63,6 +81,7 @@ local TOP_DOWN_POSITION = {
 
 local TOP_DOWN_DISTANCE  = 40
 local CAPTURE_INTERVAL   = 60    -- seconds between auto-captures
+
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local recording       = false
@@ -106,27 +125,11 @@ function onLoad()
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- Data collection — hardcoded GUIDs from Global (see global Lua script)
+-- Data collection — all routed through the scoresheet to avoid TTS cross-script
+-- ownership errors when reading zone objects.
 -- ─────────────────────────────────────────────────────────────────────────────
 
-local SCORESHEET_GUID         = "06d627"
-local DEPLOYMENT_ZONE_GUID    = "dcf95b"
-local PRIMARY_ZONE_GUID       = "740abc"
-local CHALLENGER_ZONE_GUID    = "cdecf2"
-local SEC_P1_1_ZONE_GUID      = "0ec215"   -- Player 1 (Red) secondary slot 1
-local SEC_P1_2_ZONE_GUID      = "d865d4"   -- Player 1 (Red) secondary slot 2
-local SEC_P2_1_ZONE_GUID      = "3c8d71"   -- Player 2 (Blue) secondary slot 1
-local SEC_P2_2_ZONE_GUID      = "88cac4"   -- Player 2 (Blue) secondary slot 2
-
-local function zoneCardName(guid)
-    local zone = getObjectFromGUID(guid)
-    if not zone then return nil end
-    local objs = zone.getObjects()
-    if #objs == 0 then return nil end
-    local name = objs[1].getName()
-    if name == "" then return nil end
-    return name
-end
+local SCORESHEET_GUID = "06d627"
 
 local function getScores()
     local sheet = getObjectFromGUID(SCORESHEET_GUID)
@@ -137,17 +140,11 @@ local function getScores()
 end
 
 local function getCards()
-    return {
-        deployment = zoneCardName(DEPLOYMENT_ZONE_GUID),
-        primary    = zoneCardName(PRIMARY_ZONE_GUID),
-        challenger = zoneCardName(CHALLENGER_ZONE_GUID),
-        -- Player 1 (Red) secondaries
-        p1_sec1    = zoneCardName(SEC_P1_1_ZONE_GUID),
-        p1_sec2    = zoneCardName(SEC_P1_2_ZONE_GUID),
-        -- Player 2 (Blue) secondaries
-        p2_sec1    = zoneCardName(SEC_P2_1_ZONE_GUID),
-        p2_sec2    = zoneCardName(SEC_P2_2_ZONE_GUID),
-    }
+    local sheet = getObjectFromGUID(SCORESHEET_GUID)
+    if not sheet then return nil end
+    local ok, result = pcall(function() return sheet.call("getCardData") end)
+    if ok then return result end
+    return nil
 end
 
 local function runSequence(player_color, action_name)
@@ -175,7 +172,6 @@ end
 -- ─────────────────────────────────────────────────────────────────────────────
 
 function doCapture(obj, player_color, alt_click)
-    -- Blocked while auto-rec is mid-sequence to avoid camera conflicts
     if not capturing then
         runSequence(player_color, "capture")
     end
@@ -185,7 +181,6 @@ end
 
 function doToggleRec(obj, player_color, alt_click)
     if recording then
-        -- Stop recording
         recording = false
         self.editButton({
             index      = BTN_REC,
@@ -193,7 +188,6 @@ function doToggleRec(obj, player_color, alt_click)
             font_color = {0.9, 0.2, 0.2},
         })
     else
-        -- Start recording
         recording      = true
         recorder_color = player_color
         self.editButton({
@@ -213,39 +207,22 @@ function scheduleNextCapture()
         scheduleNextCapture()
     end, CAPTURE_INTERVAL)
 end
+
+-- ─────────────────────────────────────────────────────────────────────────────
+
+function onExternalMessage(data)
+    if data and data.action == "handshake" then
+        broadcastToAll("[Snapshot Bot] Connected", {0.18, 0.8, 0.42})
+    end
+end
 """
 
-
-# ── Drawing-line exact RGB values ────────────────────────────────────────────────
-# Each entry is (label, (R, G, B)).
-# Replace placeholder values with your exact TTS RGB readings.
-DRAWING_COLORS_RGB = [
-    ("red",    (218,  22,  22)),
-    ("blue",   ( 28, 135, 255)),
-    ("teal",   ( 34, 177, 155)),
-    ("purple", (255,   0, 255)),
-]
-
-# Maximum per-channel deviation allowed (accounts for PNG compression rounding).
-# 0 = pixel-perfect. Raise to ~8 if you see missed pixels on line edges.
-RGB_TOLERANCE = 4
-
-INPAINT_RADIUS = 5
-# ── Shared app state ──────────────────────────────────────────────────────────
-_state = {
-    "listening":   False,
-    "frame_num":   0,
-    "manifest":    None,
-    "session_dir": None,
-    "tray":        None,
-}
 
 # ── First-run setup ───────────────────────────────────────────────────────────
 
 def ensure_assets():
     """Write capture_button.lua on first run if missing."""
     STORE_DIR.mkdir(parents=True, exist_ok=True)
-
     lua_path = APP_DIR / "capture_button.lua"
     if not lua_path.exists():
         lua_path.write_text(CAPTURE_BUTTON_LUA, encoding="utf-8")
@@ -281,14 +258,13 @@ def strip_drawing_lines(filepath: Path) -> bool:
     if img_bgr is None:
         return False
 
-    # Work in RGB so the tuples above match directly
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB).astype(np.int16)
     h, w    = img_bgr.shape[:2]
     mask    = np.zeros((h, w), dtype=np.uint8)
 
-    for label, (r, g, b) in DRAWING_COLORS_RGB:
+    for _label, (r, g, b) in DRAWING_COLORS_RGB:
         target = np.array([r, g, b], dtype=np.int16)
-        diff   = np.abs(img_rgb - target)          # shape (h, w, 3)
+        diff   = np.abs(img_rgb - target)
         hit    = np.all(diff <= RGB_TOLERANCE, axis=2)
         mask[hit] = 255
 
@@ -303,7 +279,9 @@ def strip_drawing_lines(filepath: Path) -> bool:
 
 # ── Screenshot ────────────────────────────────────────────────────────────────
 
-def take_screenshot(prefetched_monitor: dict | None = None, scores: dict | None = None, cards: dict | None = None):
+def take_screenshot(prefetched_monitor: dict | None = None,
+                    scores: dict | None = None,
+                    cards:  dict | None = None):
     try:
         import mss
         from mss.tools import to_png
@@ -370,9 +348,9 @@ def take_screenshot(prefetched_monitor: dict | None = None, scores: dict | None 
 
     tag = " (filtered)" if stripped else ""
     notify("TTS Replay", f"Turn {turn} captured{tag}")
-    _update_ui()   # keep frame counter in tray status line current
+    _update_ui()
 
-# ── Video export ─────────────────────────────────────────────────────────────
+# ── HTML export ───────────────────────────────────────────────────────────────
 
 def compile_html(session_dir: Path) -> Path | None:
     """Encode all turn_*.png frames into a single self-contained HTML replay."""
@@ -390,7 +368,7 @@ def compile_html(session_dir: Path) -> Path | None:
         for entry in mdata.get("frames", []):
             manifest_frames[entry["filename"]] = entry
 
-    slides         = []
+    slides           = []
     scores_per_frame = []
     cards_per_frame  = []
     timestamps       = []
@@ -402,11 +380,11 @@ def compile_html(session_dir: Path) -> Path | None:
         cards_per_frame.append(entry.get("cards"))
         timestamps.append(entry.get("timestamp", ""))
 
-    slides_js  = ",\n".join(f'"{s}"' for s in slides)
-    scores_js  = json.dumps(scores_per_frame)
-    cards_js   = json.dumps(cards_per_frame)
-    times_js   = json.dumps(timestamps)
-    title      = session_dir.name
+    slides_js = ",\n".join(f'"{s}"' for s in slides)
+    scores_js = json.dumps(scores_per_frame)
+    cards_js  = json.dumps(cards_per_frame)
+    times_js  = json.dumps(timestamps)
+    title     = session_dir.name
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -430,34 +408,23 @@ def compile_html(session_dir: Path) -> Path | None:
           font-family: "Segoe UI", system-ui, sans-serif;
           display: flex; flex-direction: column; align-items: center;
           min-height: 100vh; padding: 20px 16px; gap: 14px; }}
-
-  /* ── Header ── */
   .header {{ text-align: center; }}
   .header h1 {{ font-size: 1.3rem; letter-spacing: .08em;
                 text-transform: uppercase; color: var(--accent); }}
   .header .sub {{ font-size: .75rem; color: var(--muted); margin-top: 2px; }}
-
-  /* ── Viewer ── */
   #viewer {{ max-width: 100%; max-height: 60vh;
              border: 2px solid var(--border); border-radius: 6px;
              display: block; box-shadow: 0 4px 24px #0008; }}
-
-  /* ── Controls ── */
   .controls {{ display: flex; align-items: center; gap: 10px; }}
   .btn {{ background: var(--card); color: var(--text); border: 1px solid var(--border);
           padding: 6px 18px; cursor: pointer; border-radius: 4px; font-size: .9rem;
           transition: background .15s; }}
   .btn:hover {{ background: var(--border); }}
   input[type=range] {{ width: 240px; accent-color: var(--accent); }}
-  #label {{ min-width: 90px; text-align: center; font-size: .85rem;
-            color: var(--muted); }}
+  #label {{ min-width: 90px; text-align: center; font-size: .85rem; color: var(--muted); }}
   #timestamp {{ font-size: .75rem; color: var(--muted); text-align: center; }}
-
-  /* ── Data panel ── */
   #dataPanel {{ width: 100%; max-width: 900px; display: none; flex-direction: column; gap: 12px; }}
   #dataPanel.visible {{ display: flex; }}
-
-  /* ── Player columns ── */
   .players {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
   .player-block {{ background: var(--panel); border: 1px solid var(--border);
                    border-radius: 8px; padding: 14px; }}
@@ -479,14 +446,9 @@ def compile_html(session_dir: Path) -> Path | None:
   .player-block.p2 .player-total {{ color: var(--blue); }}
   .total-label {{ font-size: .7rem; color: var(--muted); text-align: center;
                   text-transform: uppercase; letter-spacing: .08em; }}
-
-  /* ── Shared cards row ── */
   .shared-cards {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }}
   .shared-card {{ background: var(--panel); border: 1px solid var(--border);
                   border-radius: 6px; padding: 10px 12px; }}
-  .shared-card .player-label {{ margin-bottom: 4px; }}
-
-  /* ── Round table ── */
   .round-table-wrap {{ background: var(--panel); border: 1px solid var(--border);
                        border-radius: 8px; overflow: hidden; }}
   .round-table-wrap h3 {{ font-size: .7rem; text-transform: uppercase;
@@ -498,11 +460,9 @@ def compile_html(session_dir: Path) -> Path | None:
                 letter-spacing: .06em; border-bottom: 1px solid var(--border); }}
   .rtable th.p1h {{ color: var(--red); }}
   .rtable th.p2h {{ color: var(--blue); }}
-  .rtable td {{ padding: 5px 8px; text-align: center;
-                border-bottom: 1px solid #1a1d28; }}
+  .rtable td {{ padding: 5px 8px; text-align: center; border-bottom: 1px solid #1a1d28; }}
   .rtable tr:last-child td {{ border-bottom: none; }}
-  .rtable td.rnd {{ color: var(--muted); font-size: .75rem; text-align: left;
-                    padding-left: 14px; }}
+  .rtable td.rnd {{ color: var(--muted); font-size: .75rem; text-align: left; padding-left: 14px; }}
   .rtable td.tot {{ font-weight: 700; }}
   .rtable td.tot.p1 {{ color: var(--red); }}
   .rtable td.tot.p2 {{ color: var(--blue); }}
@@ -510,9 +470,7 @@ def compile_html(session_dir: Path) -> Path | None:
   .rtable tr.total-row td {{ border-top: 2px solid var(--border);
                               font-weight: 600; background: #0d0f1a; }}
   .divider {{ width: 1px; background: var(--border); }}
-
-  .no-data {{ text-align: center; color: var(--muted); font-size: .85rem;
-              padding: 16px; }}
+  .no-data {{ text-align: center; color: var(--muted); font-size: .85rem; padding: 16px; }}
 </style>
 </head>
 <body>
@@ -520,9 +478,7 @@ def compile_html(session_dir: Path) -> Path | None:
   <h1>Battle Replay</h1>
   <div class="sub">{title}</div>
 </div>
-
 <img id="viewer" src="">
-
 <div class="controls">
   <button class="btn" id="prev">&#8592; Prev</button>
   <input type="range" id="slider" min="0" max="0" value="0">
@@ -530,26 +486,24 @@ def compile_html(session_dir: Path) -> Path | None:
   <span id="label"></span>
 </div>
 <div id="timestamp"></div>
-
 <div id="dataPanel"></div>
-
 <script>
-  const slides  = [{slides_js}];
-  const scores  = {scores_js};
-  const cards   = {cards_js};
-  const times   = {times_js};
+  const slides = [{slides_js}];
+  const scores = {scores_js};
+  const cards  = {cards_js};
+  const times  = {times_js};
 
-  const img       = document.getElementById('viewer');
-  const slider    = document.getElementById('slider');
-  const labelEl   = document.getElementById('label');
-  const tsEl      = document.getElementById('timestamp');
-  const panel     = document.getElementById('dataPanel');
+  const img     = document.getElementById('viewer');
+  const slider  = document.getElementById('slider');
+  const labelEl = document.getElementById('label');
+  const tsEl    = document.getElementById('timestamp');
+  const panel   = document.getElementById('dataPanel');
   let cur = 0;
   slider.max = slides.length - 1;
 
-  function card(name, cls='') {{
-    if (!name) return `<div class="card-pill empty${{cls ? ' '+cls : ''}}">— none —</div>`;
-    return `<div class="card-pill${{cls ? ' '+cls : ''}}">${{name}}</div>`;
+  function card(name) {{
+    if (!name) return '<div class="card-pill empty">\u2014 none \u2014</div>';
+    return `<div class="card-pill">${{name}}</div>`;
   }}
 
   function renderPanel(s, c) {{
@@ -558,97 +512,63 @@ def compile_html(session_dir: Path) -> Path | None:
       panel.innerHTML = '<div class="no-data">No score or card data for this turn</div>';
       return;
     }}
-
     const p1 = s ? s.red  : null;
     const p2 = s ? s.blue : null;
     const p1name = p1 ? p1.name : 'Player 1 (Red)';
     const p2name = p2 ? p2.name : 'Player 2 (Blue)';
 
-    // ── Player blocks ──────────────────────────────────────────────────────
     const p1Block = `
       <div class="player-block p1">
         <div class="player-name">\u25a0 ${{p1name}}</div>
-        <div class="player-label">Secondary 1</div>
-        ${{card(c && c.p1_sec1)}}
-        <div class="player-label">Secondary 2</div>
-        ${{card(c && c.p1_sec2)}}
-        ${{p1 ? `
-          <div class="player-total">${{p1.total}}</div>
+        <div class="player-label">Secondary 1</div>${{card(c && c.p1_sec1)}}
+        <div class="player-label">Secondary 2</div>${{card(c && c.p1_sec2)}}
+        ${{p1 ? `<div class="player-total">${{p1.total}}</div>
           <div class="total-label">Total VP</div>
           <div style="margin-top:8px;font-size:.78rem;color:var(--muted)">
-            PRI&nbsp;${{p1.primary}} &nbsp;·&nbsp;
-            SEC&nbsp;${{p1.secondary}} &nbsp;·&nbsp;
-            CHL&nbsp;${{p1.challenger}} &nbsp;·&nbsp;
-            Painted&nbsp;${{p1.painted}}
+            PRI&nbsp;${{p1.primary}}&nbsp;&middot;&nbsp;SEC&nbsp;${{p1.secondary}}&nbsp;&middot;&nbsp;CHL&nbsp;${{p1.challenger}}&nbsp;&middot;&nbsp;Painted&nbsp;${{p1.painted}}
           </div>` : ''}}
       </div>`;
 
     const p2Block = `
       <div class="player-block p2">
         <div class="player-name">\u25a0 ${{p2name}}</div>
-        <div class="player-label">Secondary 1</div>
-        ${{card(c && c.p2_sec1)}}
-        <div class="player-label">Secondary 2</div>
-        ${{card(c && c.p2_sec2)}}
-        ${{p2 ? `
-          <div class="player-total">${{p2.total}}</div>
+        <div class="player-label">Secondary 1</div>${{card(c && c.p2_sec1)}}
+        <div class="player-label">Secondary 2</div>${{card(c && c.p2_sec2)}}
+        ${{p2 ? `<div class="player-total">${{p2.total}}</div>
           <div class="total-label">Total VP</div>
           <div style="margin-top:8px;font-size:.78rem;color:var(--muted)">
-            PRI&nbsp;${{p2.primary}} &nbsp;·&nbsp;
-            SEC&nbsp;${{p2.secondary}} &nbsp;·&nbsp;
-            CHL&nbsp;${{p2.challenger}} &nbsp;·&nbsp;
-            Painted&nbsp;${{p2.painted}}
+            PRI&nbsp;${{p2.primary}}&nbsp;&middot;&nbsp;SEC&nbsp;${{p2.secondary}}&nbsp;&middot;&nbsp;CHL&nbsp;${{p2.challenger}}&nbsp;&middot;&nbsp;Painted&nbsp;${{p2.painted}}
           </div>` : ''}}
       </div>`;
 
-    // ── Shared cards ───────────────────────────────────────────────────────
     const sharedCards = c ? `
       <div class="shared-cards">
-        <div class="shared-card">
-          <div class="player-label">Deployment</div>
-          ${{card(c.deployment)}}
-        </div>
-        <div class="shared-card">
-          <div class="player-label">Primary Mission</div>
-          ${{card(c.primary)}}
-        </div>
-        <div class="shared-card">
-          <div class="player-label">Challenger Card</div>
-          ${{card(c.challenger)}}
-        </div>
+        <div class="shared-card"><div class="player-label">Deployment</div>${{card(c.deployment)}}</div>
+        <div class="shared-card"><div class="player-label">Primary Mission</div>${{card(c.primary)}}</div>
+        <div class="shared-card"><div class="player-label">Challenger Card</div>${{card(c.challenger)}}</div>
       </div>` : '';
 
-    // ── Round table ────────────────────────────────────────────────────────
     let roundRows = '';
     if (s) {{
       const rounds = Math.max(p1.rounds.length, p2.rounds.length);
       for (let r = 0; r < rounds; r++) {{
-        const r1 = p1.rounds[r] || {{}};
-        const r2 = p2.rounds[r] || {{}};
+        const r1 = p1.rounds[r] || {{}}, r2 = p2.rounds[r] || {{}};
         const hasScore = (r1.total || 0) + (r2.total || 0) > 0;
         roundRows += `<tr class="${{hasScore ? '' : 'dim'}}">
           <td class="rnd">Round ${{r + 1}}</td>
           <td class="tot p1">${{r1.total ?? '-'}}</td>
-          <td>${{r1.primary ?? '-'}}</td>
-          <td>${{r1.secondary ?? '-'}}</td>
-          <td>${{r1.challenger ?? '-'}}</td>
+          <td>${{r1.primary ?? '-'}}</td><td>${{r1.secondary ?? '-'}}</td><td>${{r1.challenger ?? '-'}}</td>
           <td class="divider"></td>
-          <td>${{r2.challenger ?? '-'}}</td>
-          <td>${{r2.secondary ?? '-'}}</td>
-          <td>${{r2.primary ?? '-'}}</td>
+          <td>${{r2.challenger ?? '-'}}</td><td>${{r2.secondary ?? '-'}}</td><td>${{r2.primary ?? '-'}}</td>
           <td class="tot p2">${{r2.total ?? '-'}}</td>
         </tr>`;
       }}
       roundRows += `<tr class="total-row">
         <td class="rnd">Totals</td>
         <td class="tot p1">${{p1.total}}</td>
-        <td>${{p1.primary}}</td>
-        <td>${{p1.secondary}}</td>
-        <td>${{p1.challenger}}</td>
+        <td>${{p1.primary}}</td><td>${{p1.secondary}}</td><td>${{p1.challenger}}</td>
         <td class="divider"></td>
-        <td>${{p2.challenger}}</td>
-        <td>${{p2.secondary}}</td>
-        <td>${{p2.primary}}</td>
+        <td>${{p2.challenger}}</td><td>${{p2.secondary}}</td><td>${{p2.primary}}</td>
         <td class="tot p2">${{p2.total}}</td>
       </tr>`;
     }}
@@ -659,34 +579,28 @@ def compile_html(session_dir: Path) -> Path | None:
         <table class="rtable">
           <thead><tr>
             <th></th>
-            <th class="p1h" colspan="4">\u25a0 ${{p1name}} &nbsp;&nbsp; TOT &middot; PRI &middot; SEC &middot; CHL</th>
+            <th class="p1h" colspan="4">\u25a0 ${{p1name}} &nbsp; TOT &middot; PRI &middot; SEC &middot; CHL</th>
             <th></th>
-            <th class="p2h" colspan="4">CHL &middot; SEC &middot; PRI &middot; TOT &nbsp;&nbsp; \u25a0 ${{p2name}}</th>
+            <th class="p2h" colspan="4">CHL &middot; SEC &middot; PRI &middot; TOT &nbsp; \u25a0 ${{p2name}}</th>
           </tr></thead>
           <tbody>${{roundRows}}</tbody>
         </table>
       </div>` : '';
 
     panel.className = 'visible';
-    panel.innerHTML = `
-      <div class="players">${{p1Block}}${{p2Block}}</div>
-      ${{sharedCards}}
-      ${{roundTable}}
-    `;
+    panel.innerHTML = `<div class="players">${{p1Block}}${{p2Block}}</div>${{sharedCards}}${{roundTable}}`;
   }}
 
   function fmt(iso) {{
     if (!iso) return '';
-    try {{
-      const d = new Date(iso);
-      return d.toLocaleTimeString([], {{hour:'2-digit', minute:'2-digit'}});
-    }} catch(e) {{ return iso; }}
+    try {{ return new Date(iso).toLocaleTimeString([], {{hour:'2-digit',minute:'2-digit'}}); }}
+    catch(e) {{ return iso; }}
   }}
 
   function show(n) {{
     cur = Math.max(0, Math.min(slides.length - 1, n));
-    img.src        = slides[cur];
-    slider.value   = cur;
+    img.src             = slides[cur];
+    slider.value        = cur;
     labelEl.textContent = `Turn ${{cur + 1}} / ${{slides.length}}`;
     tsEl.textContent    = times[cur] ? `Captured ${{fmt(times[cur])}}` : '';
     renderPanel(scores[cur], cards[cur]);
@@ -699,7 +613,6 @@ def compile_html(session_dir: Path) -> Path | None:
     if (e.key === 'ArrowLeft')  show(cur - 1);
     if (e.key === 'ArrowRight') show(cur + 1);
   }});
-
   show(0);
 </script>
 </body>
@@ -709,36 +622,35 @@ def compile_html(session_dir: Path) -> Path | None:
     out.write_text(html, encoding="utf-8")
     return out
 
-# ── TTS TCP listener ──────────────────────────────────────────────────────────
-# TTS owns port 39998 as the server. We connect to it as a client and keep the
-# connection open — sendExternalMessage() in Lua pushes JSON to us over that
-# persistent connection.
+# ── TTS TCP listener ───────────────────────────────────────────────────────────
+# TTS owns port 39998 as the server. We connect as a client and keep the
+# connection open. sendExternalMessage() in Lua pushes JSON to us; we can
+# also send JSON back and TTS receives it via onExternalMessage().
 
-TTS_RECONNECT_INTERVAL = 3   # seconds between connection attempts
-
-def _dispatch_action(action: str, scores: dict | None = None, cards: dict | None = None):
+def _dispatch_action(action: str,
+                     scores: dict | None = None,
+                     cards:  dict | None = None):
     if action == "capture":
         threading.Thread(target=_delayed_capture,
                          kwargs={"scores": scores, "cards": cards},
                          daemon=True).start()
     elif action == "capture_auto":
         threading.Thread(target=_delayed_capture,
-                         kwargs={"skip_on_unstable": True, "scores": scores, "cards": cards},
+                         kwargs={"skip_on_unstable": True,
+                                 "scores": scores, "cards": cards},
                          daemon=True).start()
 
 def _listener_thread():
-    notify("TTS Replay", "Connecting to TTS…")
+    notify("TTS Replay", "Connecting to TTS\u2026")
 
     buf = ""
     while _state["listening"]:
-        # ── Connect ───────────────────────────────────────────────────────────
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(TTS_RECONNECT_INTERVAL)
             sock.connect(("localhost", TTS_LISTEN_PORT))
-            sock.settimeout(None)   # block on recv once connected
+            sock.settimeout(None)
         except (ConnectionRefusedError, socket.timeout, OSError):
-            # TTS not open yet — wait and retry
             sock.close()
             for _ in range(TTS_RECONNECT_INTERVAL * 10):
                 if not _state["listening"]:
@@ -746,18 +658,20 @@ def _listener_thread():
                 time.sleep(0.1)
             continue
 
-        notify("TTS Replay", "Connected to TTS — waiting for capture signal")
+        notify("TTS Replay", "Connected to TTS \u2014 waiting for capture signal")
+        try:
+            sock.sendall((json.dumps({"action": "handshake"}) + "\n").encode("utf-8"))
+        except Exception:
+            pass
         buf = ""
 
-        # ── Read loop — messages are newline-delimited JSON ───────────────────
         try:
             while _state["listening"]:
                 chunk = sock.recv(4096)
                 if not chunk:
-                    break   # TTS disconnected
+                    break
                 buf += chunk.decode("utf-8", errors="ignore")
 
-                # TTS may send multiple messages in one recv; process all
                 while "\n" in buf:
                     line, buf = buf.split("\n", 1)
                     line = line.strip()
@@ -781,53 +695,54 @@ def _listener_thread():
             sock.close()
 
         if _state["listening"]:
-            notify("TTS Replay", "TTS disconnected — reconnecting…")
+            notify("TTS Replay", "TTS disconnected \u2014 reconnecting\u2026")
+
+# ── Stability-polling capture ─────────────────────────────────────────────────
 
 def _grab_region(monitor: dict):
-    """Grab the configured screen region and return a flat bytes object."""
     import mss
     with mss.mss() as sct:
         raw = sct.grab(monitor)
     return bytes(raw.rgb)
 
 def _frames_stable(a: bytes, b: bytes) -> bool:
-    """Return True if two raw RGB byte strings are close enough to call stable."""
     if len(a) != len(b):
         return False
-    total  = len(a) // 3          # number of pixels
+    total   = len(a) // 3
     matches = sum(1 for i in range(0, len(a), 3)
                   if a[i] == b[i] and a[i+1] == b[i+1] and a[i+2] == b[i+2])
     return (matches / total) >= STABILITY_THRESHOLD
 
-def _delayed_capture(skip_on_unstable: bool = False, scores: dict | None = None, cards: dict | None = None):
+def _delayed_capture(skip_on_unstable: bool = False,
+                     scores: dict | None = None,
+                     cards:  dict | None = None):
     cfg    = load_config()
     region = cfg.get("region")
     if not region or region.get("width", 0) < 10 or region.get("height", 0) < 10:
         return
 
     monitor = {k: region[k] for k in ("left", "top", "width", "height")}
-
-    # Initial settle wait
     time.sleep(CAMERA_SETTLE_MS / 1000)
 
-    # Poll until stable or max attempts reached
-    prev = _grab_region(monitor)
+    prev  = _grab_region(monitor)
     polls = 0
     while polls < STABILITY_MAX_POLLS:
         time.sleep(STABILITY_POLL_MS / 1000)
         curr = _grab_region(monitor)
         if _frames_stable(prev, curr):
             break
-        prev = curr
+        prev  = curr
         polls += 1
 
     if polls == STABILITY_MAX_POLLS:
         if skip_on_unstable:
-            notify("TTS Replay", "⚠ Auto-capture skipped — camera still moving")
+            notify("TTS Replay", "\u26a0 Auto-capture skipped \u2014 camera still moving")
             return
-        notify("TTS Replay", "⚠ Camera may not have settled — frame captured anyway")
+        notify("TTS Replay", "\u26a0 Camera may not have settled \u2014 frame captured anyway")
 
     take_screenshot(prefetched_monitor=monitor, scores=scores, cards=cards)
+
+# ── Session control ───────────────────────────────────────────────────────────
 
 def start_listening():
     if _state["listening"]:
@@ -848,17 +763,16 @@ def stop_listening():
     session_dir = _state.get("session_dir")
     if session_dir and _state.get("frame_num", 0) > 0:
         def _compile():
-            notify("TTS Replay", f"Compiling {_state['frame_num']} frames into replay…")
+            notify("TTS Replay", "Compiling replay\u2026")
             html_path = compile_html(session_dir)
             if html_path:
-                notify("TTS Replay", f"Saved: {html_path.name}  —  opening folder")
+                notify("TTS Replay", f"Replay saved: {html_path.name}")
                 os.startfile(str(session_dir))
             else:
-                notify("TTS Replay", "Export failed — no valid frames found")
+                notify("TTS Replay", "No frames to compile")
         threading.Thread(target=_compile, daemon=True).start()
     else:
-        notify("TTS Replay", "Session stopped (no frames captured)")
-
+        notify("TTS Replay", "Session ended \u2014 no frames captured")
 
 # ── Calibration ───────────────────────────────────────────────────────────────
 
@@ -866,19 +780,16 @@ def _run_calibrate():
     import tkinter as tk
 
     result = {}
-    root   = tk.Tk()
+
+    root = tk.Tk()
     root.attributes("-fullscreen", True)
     root.attributes("-alpha", 0.25)
     root.attributes("-topmost", True)
-    root.configure(bg="black")
+    root.configure(bg="black", cursor="crosshair")
+    root.title("Drag to select battlefield region \u2014 Esc to cancel")
 
-    canvas = tk.Canvas(root, bg="black", cursor="crosshair", highlightthickness=0)
+    canvas = tk.Canvas(root, bg="black", highlightthickness=0)
     canvas.pack(fill="both", expand=True)
-    canvas.create_text(
-        root.winfo_screenwidth() // 2, 40,
-        text="Drag over the BATTLEFIELD area  |  ESC to cancel",
-        fill="white", font=("Consolas", 18, "bold")
-    )
 
     s = {"start": None, "rect": None}
 
@@ -902,7 +813,7 @@ def _run_calibrate():
         x0, y0 = s["start"]
         x1, y1 = e.x, e.y
         if abs(x1 - x0) < 10 or abs(y1 - y0) < 10:
-            return   # Ignore accidental single-pixel clicks
+            return
         result["region"] = {
             "left":   min(x0, x1), "top":    min(y0, y1),
             "width":  abs(x1 - x0), "height": abs(y1 - y0),
@@ -921,7 +832,7 @@ def _run_calibrate():
         cfg = load_config()
         cfg["region"] = result["region"]
         save_config(cfg)
-        _update_ui()   # re-evaluate has_region so Start Session enables immediately
+        _update_ui()
         notify("TTS Replay", "Region saved")
     else:
         notify("TTS Replay", "Calibration cancelled")
@@ -929,55 +840,50 @@ def _run_calibrate():
 def do_calibrate():
     threading.Thread(target=_run_calibrate, daemon=True).start()
 
-# ── Fix screenshot glitches ───────────────────────────────────────────────────
-
-# ── Taskbar window ───────────────────────────────────────────────────────────
+# ── Taskbar window ────────────────────────────────────────────────────────────
 
 def _update_ui():
-    """Refresh button states and status indicator. Safe to call from any thread."""
     win = _state.get("window")
     if not win or not win.winfo_exists():
         return
     win.after(0, _apply_ui_state)
 
 def _apply_ui_state():
-    """Must run on the main thread."""
     listening  = _state["listening"]
     has_region = "region" in load_config()
     frame_num  = _state.get("frame_num", 0)
 
     if listening:
         _state["status_var"].set(
-            f"● RECORDING  —  {frame_num} frame{'s' if frame_num != 1 else ''} captured"
+            f"\u25cf RECORDING  \u2014  {frame_num} frame{'s' if frame_num != 1 else ''} captured"
         )
         _state["indicator"].config(bg="#2dce6a")
         _state["btn_session"].config(
-            text="■  Stop Session", bg="#c8391a",
+            text="\u25a0  Stop Session", bg="#c8391a",
             command=stop_listening
         )
     else:
         _state["indicator"].config(bg="#c8391a")
         _state["btn_session"].config(
-            text="▶  Start Session", bg="#2dce6a",
+            text="\u25b6  Start Session", bg="#2dce6a",
             command=start_listening,
             state="normal" if has_region else "disabled"
         )
         if not has_region:
-            _state["status_var"].set("Not calibrated — use Calibrate Region first")
+            _state["status_var"].set("Not calibrated \u2014 use Calibrate Region first")
         elif frame_num == 0:
-            _state["status_var"].set("Ready — start a session to begin recording")
+            _state["status_var"].set("Ready \u2014 start a session to begin recording")
 
 def _exit_app():
-    """Warn before exiting if a session is active with unsaved frames."""
     from tkinter import messagebox
     if _state["listening"] and _state.get("frame_num", 0) > 0:
         answer = messagebox.askyesnocancel(
-            "TTS Replay — Exit?",
+            "TTS Replay \u2014 Exit?",
             f"You have {_state['frame_num']} captured frame(s) in an active session.\n\n"
             "Do you want to compile them into a replay before exiting?\n\n"
-            "  Yes   → compile replay, then exit\n"
-            "  No    → exit without saving\n"
-            "  Cancel → go back",
+            "  Yes   \u2192 compile replay, then exit\n"
+            "  No    \u2192 exit without saving\n"
+            "  Cancel \u2192 go back",
             icon="warning",
         )
         if answer is True:
@@ -987,7 +893,6 @@ def _exit_app():
         elif answer is False:
             _state["listening"] = False
             _state["window"].destroy()
-        # Cancel → do nothing
     else:
         _state["listening"] = False
         _state["window"].destroy()
@@ -1002,9 +907,8 @@ def _build_window():
     win.protocol("WM_DELETE_WINDOW", _exit_app)
 
     _state["window"]     = win
-    _state["status_var"] = tk.StringVar(value="Initialising…")
+    _state["status_var"] = tk.StringVar(value="Initialising\u2026")
 
-    # ── Indicator strip + status ──────────────────────────────────────────────
     top = tk.Frame(win, bg="#1a1e26")
     top.pack(fill="x", padx=12, pady=(12, 4))
 
@@ -1017,21 +921,19 @@ def _build_window():
              font=("Segoe UI", 9), anchor="w",
              wraplength=300, justify="left").pack(side="left", fill="x", expand=True)
 
-    # ── Buttons ───────────────────────────────────────────────────────────────
     btn_frame = tk.Frame(win, bg="#1a1e26")
     btn_frame.pack(fill="x", padx=12, pady=(4, 12))
 
     btn_opts = dict(font=("Segoe UI", 10, "bold"), relief="flat",
                     padx=10, pady=6, cursor="hand2", fg="#ffffff", width=22)
 
-    btn_session = tk.Button(btn_frame, text="▶  Start Session",
+    btn_session = tk.Button(btn_frame, text="\u25b6  Start Session",
                             bg="#2dce6a", **btn_opts)
     btn_session.pack(fill="x", pady=(0, 4))
     _state["btn_session"] = btn_session
 
-    tk.Button(btn_frame, text="🎯  Calibrate Region",
+    tk.Button(btn_frame, text="\U0001f3af  Calibrate Region",
               bg="#2a3040", command=do_calibrate, **btn_opts).pack(fill="x", pady=(0, 4))
-
 
     tk.Button(btn_frame, text="Exit",
               bg="#111418", command=_exit_app, **btn_opts).pack(fill="x")
