@@ -63,18 +63,17 @@ local TOP_DOWN_POSITION = {
 
 local TOP_DOWN_DISTANCE  = 40
 local CAPTURE_INTERVAL   = 60    -- seconds between auto-captures
-
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local recording       = false
 local recorder_color  = nil
 local capturing       = false   -- true while a capture sequence is in flight
 
--- ─────────────────────────────────────────────────────────────────────────────
-
 -- Button indices (TTS assigns them in creation order, 0-based)
 local BTN_CAPTURE = 0
 local BTN_REC     = 1
+
+-- ─────────────────────────────────────────────────────────────────────────────
 
 function onLoad()
     self.createButton({
@@ -107,6 +106,49 @@ function onLoad()
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- Data collection — hardcoded GUIDs from Global (see global Lua script)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local SCORESHEET_GUID         = "06d627"
+local DEPLOYMENT_ZONE_GUID    = "dcf95b"
+local PRIMARY_ZONE_GUID       = "740abc"
+local CHALLENGER_ZONE_GUID    = "cdecf2"
+local SEC_P1_1_ZONE_GUID      = "0ec215"   -- Player 1 (Red) secondary slot 1
+local SEC_P1_2_ZONE_GUID      = "d865d4"   -- Player 1 (Red) secondary slot 2
+local SEC_P2_1_ZONE_GUID      = "3c8d71"   -- Player 2 (Blue) secondary slot 1
+local SEC_P2_2_ZONE_GUID      = "88cac4"   -- Player 2 (Blue) secondary slot 2
+
+local function zoneCardName(guid)
+    local zone = getObjectFromGUID(guid)
+    if not zone then return nil end
+    local objs = zone.getObjects()
+    if #objs == 0 then return nil end
+    local name = objs[1].getName()
+    if name == "" then return nil end
+    return name
+end
+
+local function getScores()
+    local sheet = getObjectFromGUID(SCORESHEET_GUID)
+    if not sheet then return nil end
+    local ok, result = pcall(function() return sheet.call("getMatchSummary") end)
+    if ok then return result end
+    return nil
+end
+
+local function getCards()
+    return {
+        deployment = zoneCardName(DEPLOYMENT_ZONE_GUID),
+        primary    = zoneCardName(PRIMARY_ZONE_GUID),
+        challenger = zoneCardName(CHALLENGER_ZONE_GUID),
+        -- Player 1 (Red) secondaries
+        p1_sec1    = zoneCardName(SEC_P1_1_ZONE_GUID),
+        p1_sec2    = zoneCardName(SEC_P1_2_ZONE_GUID),
+        -- Player 2 (Blue) secondaries
+        p2_sec1    = zoneCardName(SEC_P2_1_ZONE_GUID),
+        p2_sec2    = zoneCardName(SEC_P2_2_ZONE_GUID),
+    }
+end
 
 local function runSequence(player_color, action_name)
     if capturing then return end
@@ -122,7 +164,7 @@ local function runSequence(player_color, action_name)
     })
 
     Wait.time(function()
-        sendExternalMessage({ action = action_name })
+        sendExternalMessage({ action = action_name, scores = getScores(), cards = getCards() })
         Wait.time(function()
             player.setCameraMode("ThirdPerson")
             capturing = false
@@ -261,7 +303,7 @@ def strip_drawing_lines(filepath: Path) -> bool:
 
 # ── Screenshot ────────────────────────────────────────────────────────────────
 
-def take_screenshot(prefetched_monitor: dict | None = None):
+def take_screenshot(prefetched_monitor: dict | None = None, scores: dict | None = None, cards: dict | None = None):
     try:
         import mss
         from mss.tools import to_png
@@ -312,11 +354,16 @@ def take_screenshot(prefetched_monitor: dict | None = None):
     stripped = strip_drawing_lines(filepath)
 
     with _state_lock:
-        _state["manifest"]["frames"].append({
+        entry = {
             "filename":  filename,
             "timestamp": ts.isoformat(),
             "turn":      turn,
-        })
+        }
+        if scores:
+            entry["scores"] = scores
+        if cards:
+            entry["cards"] = cards
+        _state["manifest"]["frames"].append(entry)
         with open(manifest_path, "w") as f:
             json.dump(_state["manifest"], f, indent=2)
         _state["frame_num"] += 1
@@ -335,55 +382,314 @@ def compile_html(session_dir: Path) -> Path | None:
     if not frames:
         return None
 
-    slides = []
+    manifest_path = session_dir / "manifest.json"
+    manifest_frames = {}
+    if manifest_path.exists():
+        with open(manifest_path) as f:
+            mdata = json.load(f)
+        for entry in mdata.get("frames", []):
+            manifest_frames[entry["filename"]] = entry
+
+    slides         = []
+    scores_per_frame = []
+    cards_per_frame  = []
+    timestamps       = []
     for fp in frames:
         data = base64.b64encode(fp.read_bytes()).decode()
         slides.append(f'data:image/png;base64,{data}')
+        entry = manifest_frames.get(fp.name, {})
+        scores_per_frame.append(entry.get("scores"))
+        cards_per_frame.append(entry.get("cards"))
+        timestamps.append(entry.get("timestamp", ""))
 
-    slides_js = ",\n".join(f'"{s}"' for s in slides)
+    slides_js  = ",\n".join(f'"{s}"' for s in slides)
+    scores_js  = json.dumps(scores_per_frame)
+    cards_js   = json.dumps(cards_per_frame)
+    times_js   = json.dumps(timestamps)
+    title      = session_dir.name
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Battle Replay — {session_dir.name}</title>
+<title>Battle Replay \u2014 {title}</title>
 <style>
+  :root {{
+    --red:    #e05555;
+    --blue:   #5588e0;
+    --bg:     #0d0f14;
+    --panel:  #13161e;
+    --card:   #1c2030;
+    --border: #252840;
+    --text:   #d0d6e8;
+    --muted:  #5a6080;
+    --accent: #f0c040;
+  }}
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
-  body {{ background: #111; color: #eee; font-family: sans-serif;
+  body {{ background: var(--bg); color: var(--text);
+          font-family: "Segoe UI", system-ui, sans-serif;
           display: flex; flex-direction: column; align-items: center;
-          min-height: 100vh; padding: 16px; }}
-  h1 {{ font-size: 1rem; opacity: .5; margin-bottom: 12px; }}
-  #viewer {{ max-width: 100%; max-height: 70vh; border: 1px solid #333; }}
-  #controls {{ display: flex; align-items: center; gap: 12px; margin-top: 12px; }}
-  button {{ background: #222; color: #eee; border: 1px solid #444;
-            padding: 6px 16px; cursor: pointer; border-radius: 4px; font-size: .9rem; }}
-  button:hover {{ background: #333; }}
-  input[type=range] {{ width: 260px; }}
-  #label {{ min-width: 80px; text-align: center; font-size: .9rem; opacity: .7; }}
+          min-height: 100vh; padding: 20px 16px; gap: 14px; }}
+
+  /* ── Header ── */
+  .header {{ text-align: center; }}
+  .header h1 {{ font-size: 1.3rem; letter-spacing: .08em;
+                text-transform: uppercase; color: var(--accent); }}
+  .header .sub {{ font-size: .75rem; color: var(--muted); margin-top: 2px; }}
+
+  /* ── Viewer ── */
+  #viewer {{ max-width: 100%; max-height: 60vh;
+             border: 2px solid var(--border); border-radius: 6px;
+             display: block; box-shadow: 0 4px 24px #0008; }}
+
+  /* ── Controls ── */
+  .controls {{ display: flex; align-items: center; gap: 10px; }}
+  .btn {{ background: var(--card); color: var(--text); border: 1px solid var(--border);
+          padding: 6px 18px; cursor: pointer; border-radius: 4px; font-size: .9rem;
+          transition: background .15s; }}
+  .btn:hover {{ background: var(--border); }}
+  input[type=range] {{ width: 240px; accent-color: var(--accent); }}
+  #label {{ min-width: 90px; text-align: center; font-size: .85rem;
+            color: var(--muted); }}
+  #timestamp {{ font-size: .75rem; color: var(--muted); text-align: center; }}
+
+  /* ── Data panel ── */
+  #dataPanel {{ width: 100%; max-width: 900px; display: none; flex-direction: column; gap: 12px; }}
+  #dataPanel.visible {{ display: flex; }}
+
+  /* ── Player columns ── */
+  .players {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
+  .player-block {{ background: var(--panel); border: 1px solid var(--border);
+                   border-radius: 8px; padding: 14px; }}
+  .player-block.p1 {{ border-top: 3px solid var(--red); }}
+  .player-block.p2 {{ border-top: 3px solid var(--blue); }}
+  .player-name {{ font-size: 1rem; font-weight: 700; margin-bottom: 10px; }}
+  .player-block.p1 .player-name {{ color: var(--red); }}
+  .player-block.p2 .player-name {{ color: var(--blue); }}
+  .player-label {{ font-size: .65rem; text-transform: uppercase;
+                   letter-spacing: .1em; color: var(--muted); margin-bottom: 2px; }}
+  .card-pill {{ background: var(--card); border: 1px solid var(--border);
+                border-radius: 4px; padding: 5px 10px; font-size: .82rem;
+                color: var(--text); margin-bottom: 6px; }}
+  .card-pill.empty {{ color: var(--muted); font-style: italic; }}
+  .player-total {{ font-size: 2rem; font-weight: 800; text-align: center;
+                   margin-top: 10px; padding-top: 10px;
+                   border-top: 1px solid var(--border); }}
+  .player-block.p1 .player-total {{ color: var(--red); }}
+  .player-block.p2 .player-total {{ color: var(--blue); }}
+  .total-label {{ font-size: .7rem; color: var(--muted); text-align: center;
+                  text-transform: uppercase; letter-spacing: .08em; }}
+
+  /* ── Shared cards row ── */
+  .shared-cards {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }}
+  .shared-card {{ background: var(--panel); border: 1px solid var(--border);
+                  border-radius: 6px; padding: 10px 12px; }}
+  .shared-card .player-label {{ margin-bottom: 4px; }}
+
+  /* ── Round table ── */
+  .round-table-wrap {{ background: var(--panel); border: 1px solid var(--border);
+                       border-radius: 8px; overflow: hidden; }}
+  .round-table-wrap h3 {{ font-size: .7rem; text-transform: uppercase;
+                          letter-spacing: .1em; color: var(--muted);
+                          padding: 10px 14px 6px; }}
+  table.rtable {{ width: 100%; border-collapse: collapse; font-size: .82rem; }}
+  .rtable th {{ padding: 4px 8px; text-align: center; color: var(--muted);
+                font-weight: 400; font-size: .72rem; text-transform: uppercase;
+                letter-spacing: .06em; border-bottom: 1px solid var(--border); }}
+  .rtable th.p1h {{ color: var(--red); }}
+  .rtable th.p2h {{ color: var(--blue); }}
+  .rtable td {{ padding: 5px 8px; text-align: center;
+                border-bottom: 1px solid #1a1d28; }}
+  .rtable tr:last-child td {{ border-bottom: none; }}
+  .rtable td.rnd {{ color: var(--muted); font-size: .75rem; text-align: left;
+                    padding-left: 14px; }}
+  .rtable td.tot {{ font-weight: 700; }}
+  .rtable td.tot.p1 {{ color: var(--red); }}
+  .rtable td.tot.p2 {{ color: var(--blue); }}
+  .rtable tr.dim td {{ opacity: .3; }}
+  .rtable tr.total-row td {{ border-top: 2px solid var(--border);
+                              font-weight: 600; background: #0d0f1a; }}
+  .divider {{ width: 1px; background: var(--border); }}
+
+  .no-data {{ text-align: center; color: var(--muted); font-size: .85rem;
+              padding: 16px; }}
 </style>
 </head>
 <body>
-<h1>Battle Replay — {session_dir.name}</h1>
+<div class="header">
+  <h1>Battle Replay</h1>
+  <div class="sub">{title}</div>
+</div>
+
 <img id="viewer" src="">
-<div id="controls">
-  <button id="prev">&#8592; Prev</button>
+
+<div class="controls">
+  <button class="btn" id="prev">&#8592; Prev</button>
   <input type="range" id="slider" min="0" max="0" value="0">
-  <button id="next">Next &#8594;</button>
+  <button class="btn" id="next">Next &#8594;</button>
   <span id="label"></span>
 </div>
+<div id="timestamp"></div>
+
+<div id="dataPanel"></div>
+
 <script>
-  const slides = [{slides_js}];
-  const img    = document.getElementById('viewer');
-  const slider = document.getElementById('slider');
-  const label  = document.getElementById('label');
+  const slides  = [{slides_js}];
+  const scores  = {scores_js};
+  const cards   = {cards_js};
+  const times   = {times_js};
+
+  const img       = document.getElementById('viewer');
+  const slider    = document.getElementById('slider');
+  const labelEl   = document.getElementById('label');
+  const tsEl      = document.getElementById('timestamp');
+  const panel     = document.getElementById('dataPanel');
   let cur = 0;
   slider.max = slides.length - 1;
 
+  function card(name, cls='') {{
+    if (!name) return `<div class="card-pill empty${{cls ? ' '+cls : ''}}">— none —</div>`;
+    return `<div class="card-pill${{cls ? ' '+cls : ''}}">${{name}}</div>`;
+  }}
+
+  function renderPanel(s, c) {{
+    if (!s && !c) {{
+      panel.className = 'visible';
+      panel.innerHTML = '<div class="no-data">No score or card data for this turn</div>';
+      return;
+    }}
+
+    const p1 = s ? s.red  : null;
+    const p2 = s ? s.blue : null;
+    const p1name = p1 ? p1.name : 'Player 1 (Red)';
+    const p2name = p2 ? p2.name : 'Player 2 (Blue)';
+
+    // ── Player blocks ──────────────────────────────────────────────────────
+    const p1Block = `
+      <div class="player-block p1">
+        <div class="player-name">\u25a0 ${{p1name}}</div>
+        <div class="player-label">Secondary 1</div>
+        ${{card(c && c.p1_sec1)}}
+        <div class="player-label">Secondary 2</div>
+        ${{card(c && c.p1_sec2)}}
+        ${{p1 ? `
+          <div class="player-total">${{p1.total}}</div>
+          <div class="total-label">Total VP</div>
+          <div style="margin-top:8px;font-size:.78rem;color:var(--muted)">
+            PRI&nbsp;${{p1.primary}} &nbsp;·&nbsp;
+            SEC&nbsp;${{p1.secondary}} &nbsp;·&nbsp;
+            CHL&nbsp;${{p1.challenger}} &nbsp;·&nbsp;
+            Painted&nbsp;${{p1.painted}}
+          </div>` : ''}}
+      </div>`;
+
+    const p2Block = `
+      <div class="player-block p2">
+        <div class="player-name">\u25a0 ${{p2name}}</div>
+        <div class="player-label">Secondary 1</div>
+        ${{card(c && c.p2_sec1)}}
+        <div class="player-label">Secondary 2</div>
+        ${{card(c && c.p2_sec2)}}
+        ${{p2 ? `
+          <div class="player-total">${{p2.total}}</div>
+          <div class="total-label">Total VP</div>
+          <div style="margin-top:8px;font-size:.78rem;color:var(--muted)">
+            PRI&nbsp;${{p2.primary}} &nbsp;·&nbsp;
+            SEC&nbsp;${{p2.secondary}} &nbsp;·&nbsp;
+            CHL&nbsp;${{p2.challenger}} &nbsp;·&nbsp;
+            Painted&nbsp;${{p2.painted}}
+          </div>` : ''}}
+      </div>`;
+
+    // ── Shared cards ───────────────────────────────────────────────────────
+    const sharedCards = c ? `
+      <div class="shared-cards">
+        <div class="shared-card">
+          <div class="player-label">Deployment</div>
+          ${{card(c.deployment)}}
+        </div>
+        <div class="shared-card">
+          <div class="player-label">Primary Mission</div>
+          ${{card(c.primary)}}
+        </div>
+        <div class="shared-card">
+          <div class="player-label">Challenger Card</div>
+          ${{card(c.challenger)}}
+        </div>
+      </div>` : '';
+
+    // ── Round table ────────────────────────────────────────────────────────
+    let roundRows = '';
+    if (s) {{
+      const rounds = Math.max(p1.rounds.length, p2.rounds.length);
+      for (let r = 0; r < rounds; r++) {{
+        const r1 = p1.rounds[r] || {{}};
+        const r2 = p2.rounds[r] || {{}};
+        const hasScore = (r1.total || 0) + (r2.total || 0) > 0;
+        roundRows += `<tr class="${{hasScore ? '' : 'dim'}}">
+          <td class="rnd">Round ${{r + 1}}</td>
+          <td class="tot p1">${{r1.total ?? '-'}}</td>
+          <td>${{r1.primary ?? '-'}}</td>
+          <td>${{r1.secondary ?? '-'}}</td>
+          <td>${{r1.challenger ?? '-'}}</td>
+          <td class="divider"></td>
+          <td>${{r2.challenger ?? '-'}}</td>
+          <td>${{r2.secondary ?? '-'}}</td>
+          <td>${{r2.primary ?? '-'}}</td>
+          <td class="tot p2">${{r2.total ?? '-'}}</td>
+        </tr>`;
+      }}
+      roundRows += `<tr class="total-row">
+        <td class="rnd">Totals</td>
+        <td class="tot p1">${{p1.total}}</td>
+        <td>${{p1.primary}}</td>
+        <td>${{p1.secondary}}</td>
+        <td>${{p1.challenger}}</td>
+        <td class="divider"></td>
+        <td>${{p2.challenger}}</td>
+        <td>${{p2.secondary}}</td>
+        <td>${{p2.primary}}</td>
+        <td class="tot p2">${{p2.total}}</td>
+      </tr>`;
+    }}
+
+    const roundTable = s ? `
+      <div class="round-table-wrap">
+        <h3>Round by Round</h3>
+        <table class="rtable">
+          <thead><tr>
+            <th></th>
+            <th class="p1h" colspan="4">\u25a0 ${{p1name}} &nbsp;&nbsp; TOT &middot; PRI &middot; SEC &middot; CHL</th>
+            <th></th>
+            <th class="p2h" colspan="4">CHL &middot; SEC &middot; PRI &middot; TOT &nbsp;&nbsp; \u25a0 ${{p2name}}</th>
+          </tr></thead>
+          <tbody>${{roundRows}}</tbody>
+        </table>
+      </div>` : '';
+
+    panel.className = 'visible';
+    panel.innerHTML = `
+      <div class="players">${{p1Block}}${{p2Block}}</div>
+      ${{sharedCards}}
+      ${{roundTable}}
+    `;
+  }}
+
+  function fmt(iso) {{
+    if (!iso) return '';
+    try {{
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], {{hour:'2-digit', minute:'2-digit'}});
+    }} catch(e) {{ return iso; }}
+  }}
+
   function show(n) {{
     cur = Math.max(0, Math.min(slides.length - 1, n));
-    img.src      = slides[cur];
-    slider.value = cur;
-    label.textContent = `Turn ${{cur + 1}} / ${{slides.length}}`;
+    img.src        = slides[cur];
+    slider.value   = cur;
+    labelEl.textContent = `Turn ${{cur + 1}} / ${{slides.length}}`;
+    tsEl.textContent    = times[cur] ? `Captured ${{fmt(times[cur])}}` : '';
+    renderPanel(scores[cur], cards[cur]);
   }}
 
   document.getElementById('prev').onclick = () => show(cur - 1);
@@ -410,12 +716,14 @@ def compile_html(session_dir: Path) -> Path | None:
 
 TTS_RECONNECT_INTERVAL = 3   # seconds between connection attempts
 
-def _dispatch_action(action: str):
+def _dispatch_action(action: str, scores: dict | None = None, cards: dict | None = None):
     if action == "capture":
-        threading.Thread(target=_delayed_capture, daemon=True).start()
+        threading.Thread(target=_delayed_capture,
+                         kwargs={"scores": scores, "cards": cards},
+                         daemon=True).start()
     elif action == "capture_auto":
         threading.Thread(target=_delayed_capture,
-                         kwargs={"skip_on_unstable": True},
+                         kwargs={"skip_on_unstable": True, "scores": scores, "cards": cards},
                          daemon=True).start()
 
 def _listener_thread():
@@ -458,9 +766,12 @@ def _listener_thread():
                     try:
                         msg = json.loads(line)
                         if isinstance(msg, dict):
-                            action = (msg.get("customMessage") or {}).get("action")
+                            custom = msg.get("customMessage") or {}
+                            action = custom.get("action")
+                            scores = custom.get("scores")
+                            cards  = custom.get("cards")
                             if action:
-                                _dispatch_action(action)
+                                _dispatch_action(action, scores, cards)
                     except json.JSONDecodeError:
                         pass
 
@@ -488,7 +799,7 @@ def _frames_stable(a: bytes, b: bytes) -> bool:
                   if a[i] == b[i] and a[i+1] == b[i+1] and a[i+2] == b[i+2])
     return (matches / total) >= STABILITY_THRESHOLD
 
-def _delayed_capture(skip_on_unstable: bool = False):
+def _delayed_capture(skip_on_unstable: bool = False, scores: dict | None = None, cards: dict | None = None):
     cfg    = load_config()
     region = cfg.get("region")
     if not region or region.get("width", 0) < 10 or region.get("height", 0) < 10:
@@ -516,7 +827,7 @@ def _delayed_capture(skip_on_unstable: bool = False):
             return
         notify("TTS Replay", "⚠ Camera may not have settled — frame captured anyway")
 
-    take_screenshot(prefetched_monitor=monitor)
+    take_screenshot(prefetched_monitor=monitor, scores=scores, cards=cards)
 
 def start_listening():
     if _state["listening"]:

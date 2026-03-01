@@ -14,18 +14,17 @@ local TOP_DOWN_POSITION = {
 
 local TOP_DOWN_DISTANCE  = 40
 local CAPTURE_INTERVAL   = 60    -- seconds between auto-captures
-
 -- ─────────────────────────────────────────────────────────────────────────────
 
 local recording       = false
 local recorder_color  = nil
 local capturing       = false   -- true while a capture sequence is in flight
 
--- ─────────────────────────────────────────────────────────────────────────────
-
 -- Button indices (TTS assigns them in creation order, 0-based)
 local BTN_CAPTURE = 0
 local BTN_REC     = 1
+
+-- ─────────────────────────────────────────────────────────────────────────────
 
 function onLoad()
     self.createButton({
@@ -58,6 +57,49 @@ function onLoad()
 end
 
 -- ─────────────────────────────────────────────────────────────────────────────
+-- Data collection — hardcoded GUIDs from Global (see global Lua script)
+-- ─────────────────────────────────────────────────────────────────────────────
+
+local SCORESHEET_GUID         = "06d627"
+local DEPLOYMENT_ZONE_GUID    = "dcf95b"
+local PRIMARY_ZONE_GUID       = "740abc"
+local CHALLENGER_ZONE_GUID    = "cdecf2"
+local SEC_P1_1_ZONE_GUID      = "0ec215"   -- Player 1 (Red) secondary slot 1
+local SEC_P1_2_ZONE_GUID      = "d865d4"   -- Player 1 (Red) secondary slot 2
+local SEC_P2_1_ZONE_GUID      = "3c8d71"   -- Player 2 (Blue) secondary slot 1
+local SEC_P2_2_ZONE_GUID      = "88cac4"   -- Player 2 (Blue) secondary slot 2
+
+local function zoneCardName(guid)
+    local zone = getObjectFromGUID(guid)
+    if not zone then return nil end
+    local objs = zone.getObjects()
+    if #objs == 0 then return nil end
+    local name = objs[1].getName()
+    if name == "" then return nil end
+    return name
+end
+
+local function getScores()
+    local sheet = getObjectFromGUID(SCORESHEET_GUID)
+    if not sheet then return nil end
+    local ok, result = pcall(function() return sheet.call("getMatchSummary") end)
+    if ok then return result end
+    return nil
+end
+
+local function getCards()
+    return {
+        deployment = zoneCardName(DEPLOYMENT_ZONE_GUID),
+        primary    = zoneCardName(PRIMARY_ZONE_GUID),
+        challenger = zoneCardName(CHALLENGER_ZONE_GUID),
+        -- Player 1 (Red) secondaries
+        p1_sec1    = zoneCardName(SEC_P1_1_ZONE_GUID),
+        p1_sec2    = zoneCardName(SEC_P1_2_ZONE_GUID),
+        -- Player 2 (Blue) secondaries
+        p2_sec1    = zoneCardName(SEC_P2_1_ZONE_GUID),
+        p2_sec2    = zoneCardName(SEC_P2_2_ZONE_GUID),
+    }
+end
 
 local function runSequence(player_color, action_name)
     if capturing then return end
@@ -73,7 +115,7 @@ local function runSequence(player_color, action_name)
     })
 
     Wait.time(function()
-        sendExternalMessage({ action = action_name })
+        sendExternalMessage({ action = action_name, scores = getScores(), cards = getCards() })
         Wait.time(function()
             player.setCameraMode("ThirdPerson")
             capturing = false
