@@ -83,15 +83,15 @@ _state = {
 # ── Embedded assets ───────────────────────────────────────────────────────────
 
 CAPTURE_BUTTON_LUA = r"""
--- ═════════════════════════════════════════════════════════════════════════════
+-- =============================================================================
 -- Fendi's Snapshotbot  (single-object script)
 -- Attach this script to ONE object in your TTS save.
--- Right-click object → Scripting → paste → Save & Play.
--- ═════════════════════════════════════════════════════════════════════════════
+-- Right-click object -> Scripting -> paste -> Save & Play.
+-- =============================================================================
 
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 -- CONFIG
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 
 local TOP_DOWN_POSITION = {
     x = 0,    -- centre of battlefield (X axis)
@@ -102,9 +102,9 @@ local TOP_DOWN_POSITION = {
 local TOP_DOWN_DISTANCE = 40
 local CAPTURE_INTERVAL  = 60    -- seconds between auto-captures
 
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 -- GUIDs
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 
 local SCORESHEET_GUID = "06d627"
 
@@ -118,9 +118,9 @@ local ZONE_GUIDS = {
     p2_sec2    = "88cac4",
 }
 
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 -- Helpers
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 
 local C = {
     green  = {0.18, 0.8,  0.42},
@@ -145,12 +145,12 @@ local function safeCall(label, fn)
     return ok
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Cross-context data store — uses self.setVar / self.getVar so data written
+-- -----------------------------------------------------------------------------
+-- Cross-context data store -- uses self.setVar / self.getVar so data written
 -- in onExternalMessage can be safely read in onUpdate and vice-versa.
 -- Upvalue variables are context-isolated in TTS non-Global object scripts;
 -- object vars are not.
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 
 local function storeData(scores, cards)
     -- Only overwrite a slot when we have a real value; passing nil preserves
@@ -171,10 +171,10 @@ local function loadData()
     return scores, cards
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- State — only PRIMITIVE upvalues; never read across contexts.
+-- -----------------------------------------------------------------------------
+-- State -- only PRIMITIVE upvalues; never read across contexts.
 -- All inter-context communication goes through self.setVar / self.getVar.
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 
 local recording      = false
 local capturing      = false
@@ -185,7 +185,7 @@ local recWaitID      = nil
 local zoneObjs    = {}
 local zonesCached = false
 
--- Primitive trigger flags — written by button/Wait callbacks, read by onUpdate.
+-- Primitive trigger flags -- written by button/Wait callbacks, read by onUpdate.
 local triggerCapture  = nil    -- player_color string or nil
 local triggerRecStart = nil    -- player_color string or nil
 local triggerRecStop  = false  -- bool
@@ -194,12 +194,13 @@ local pendingAutoCap  = false  -- bool
 -- Capture pipeline phase stored on object so it survives context switches.
 -- self.setVar("phase", 0/1/2)
 
-local BTN_CAPTURE = 0
-local BTN_REC     = 1
+local BTN_CAPTURE   = 0
+local BTN_REC       = 1
+local BTN_CALIBRATE = 2
 
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 -- onLoad
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 
 function onLoad()
     -- Initialise object vars
@@ -237,13 +238,27 @@ function onLoad()
         tooltip        = "Auto-capture every " .. CAPTURE_INTERVAL .. "s",
     })
 
+    self.createButton({
+        label          = "📐 CALIBRATE",
+        click_function = "doCalibrate",
+        function_owner = self,
+        position       = {0, 0.1, 1.5},
+        rotation       = {0, 0, 0},
+        width          = 900,
+        height         = 280,
+        font_size      = 110,
+        color          = {0.1, 0.1, 0.1},
+        font_color     = {0.5, 0.8, 1.0},
+        tooltip        = "Set top-down view for calibration -- then use the Python window to draw the region",
+    })
+
     log("Loaded. Waiting for Python connection...", C.grey)
     WebRequest.post("http://127.0.0.1:39997/handshake", '{"action":"handshake"}', function(req) end)
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Zone cache + data refresh — called ONLY from onExternalMessage
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
+-- Zone cache + data refresh -- called ONLY from onExternalMessage
+-- -----------------------------------------------------------------------------
 
 local function _ensureZones()
     if zonesCached then return end
@@ -268,9 +283,9 @@ local function _firstName(zone)
 end
 
 local function _refreshCache()
-    -- Called only from onExternalMessage — safe context for cross-object calls.
+    -- Called only from onExternalMessage -- safe context for cross-object calls.
     -- Cards: zone.getObjects() property reads.
-    -- Scores: sheet.script_state property read (NOT sheet.call — no ownership error).
+    -- Scores: sheet.script_state property read (NOT sheet.call -- no ownership error).
 
     local cards  = nil
     local scores = nil
@@ -335,7 +350,7 @@ local function _refreshCache()
             return math.min(pri + sec + chl + 10, 100)
         end
 
-        -- Read steam names directly from seated players — plain property reads, safe everywhere.
+        -- Read steam names directly from seated players -- plain property reads, safe everywhere.
         local redName  = Player["Red"].steam_name  or "Player 1"
         local blueName = Player["Blue"].steam_name or "Player 2"
         local params = {}
@@ -364,14 +379,14 @@ local function _refreshCache()
     storeData(scores, cards)
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- onUpdate — ALL pipeline logic lives here.
+-- -----------------------------------------------------------------------------
+-- onUpdate -- ALL pipeline logic lives here.
 -- Reads primitive trigger flags; reads/writes inter-context data via setVar/getVar.
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 
 function onUpdate()
 
-    -- ── Rec-stop ──────────────────────────────────────────────────────────────
+    -- -- Rec-stop --------------------------------------------------------------
     if triggerRecStop then
         triggerRecStop = false
         safeCall("onUpdate/rec-stop", function()
@@ -382,7 +397,7 @@ function onUpdate()
         return
     end
 
-    -- ── Rec-start ─────────────────────────────────────────────────────────────
+    -- -- Rec-start -------------------------------------------------------------
     if triggerRecStart then
         local color     = triggerRecStart
         triggerRecStart = nil
@@ -398,7 +413,7 @@ function onUpdate()
         return
     end
 
-    -- ── Manual capture trigger ────────────────────────────────────────────────
+    -- -- Manual capture trigger ------------------------------------------------
     if triggerCapture and not capturing then
         local color    = triggerCapture
         triggerCapture = nil
@@ -409,7 +424,7 @@ function onUpdate()
         end)
     end
 
-    -- ── Auto-capture timer fired ──────────────────────────────────────────────
+    -- -- Auto-capture timer fired ----------------------------------------------
     if pendingAutoCap then
         pendingAutoCap = false
         safeCall("onUpdate/auto-cap", function()
@@ -422,7 +437,7 @@ function onUpdate()
         end)
     end
 
-    -- ── Pipeline phase 1: position camera + request cache refresh ───────────
+    -- -- Pipeline phase 1: position camera + request cache refresh -----------
     -- Phase advances to 2 only after onExternalMessage receives the
     -- refresh_done echo from Python, guaranteeing scores/cards are fresh.
     local phase = self.getVar("phase")
@@ -433,7 +448,7 @@ function onUpdate()
 
             local p = Player[player_color]
             if not p or not p.seated then
-                log("Player " .. tostring(player_color) .. " not seated — skipped", C.red)
+                log("Player " .. tostring(player_color) .. " not seated -- skipped", C.red)
                 self.setVar("phase", 0)
                 return
             end
@@ -456,7 +471,7 @@ function onUpdate()
         return
     end
 
-    -- ── Pipeline phase 2: send signal ────────────────────────────────────────
+    -- -- Pipeline phase 2: send signal ----------------------------------------
     if phase == 2 then
         safeCall("onUpdate/phase2", function()
             local action       = self.getVar("pendingAction")
@@ -472,7 +487,7 @@ function onUpdate()
                     else
                         log("Captured", C.green)
                     end
-                    -- Restore camera as soon as Python responds — no fixed delay needed.
+                    -- Restore camera as soon as Python responds -- no fixed delay needed.
                     local p = Player[player_color]
                     if p then p.setCameraMode("ThirdPerson") end
                     capturing = false
@@ -484,9 +499,9 @@ function onUpdate()
 
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- Button callbacks — write ONE primitive flag only.
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
+-- Button callbacks -- write ONE primitive flag only.
+-- -----------------------------------------------------------------------------
 
 function doCapture(obj, player_color, alt_click)
     if capturing then return end
@@ -503,9 +518,32 @@ function doToggleRec(obj, player_color, alt_click)
     end
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
+function doCalibrate(obj, player_color, alt_click)
+    -- Positions the camera top-down so the battlefield is visible for
+    -- region selection in the Python window. Does NOT capture anything.
+    -- Camera returns to third-person after a short hold.
+    local p = Player[player_color]
+    if not p or not p.seated then
+        log("Sit down first to calibrate your view", C.red)
+        return
+    end
+    local yaw = (player_color == "Red") and 180 or 0
+    p.lookAt({
+        position = TOP_DOWN_POSITION,
+        pitch    = 90,
+        yaw      = yaw,
+        distance = TOP_DOWN_DISTANCE,
+    })
+    log("Camera locked top-down for 15s - alt-tab to Python and click Calibrate Region now", C.yellow)
+    Wait.time(function()
+        p.setCameraMode("ThirdPerson")
+        log("Camera released", C.grey)
+    end, 15)
+end
+
+-- -----------------------------------------------------------------------------
 -- Auto-capture scheduler
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
 
 function scheduleNextCapture()
     recWaitID = Wait.time(function()
@@ -515,9 +553,9 @@ function scheduleNextCapture()
     end, CAPTURE_INTERVAL)
 end
 
--- ─────────────────────────────────────────────────────────────────────────────
--- onExternalMessage — only safe context for cross-object calls
--- ─────────────────────────────────────────────────────────────────────────────
+-- -----------------------------------------------------------------------------
+-- onExternalMessage -- only safe context for cross-object calls
+-- -----------------------------------------------------------------------------
 
 function onExternalMessage(data)
     if not data then return end
@@ -543,7 +581,7 @@ function onExternalMessage(data)
 
     if data.action == "reannounce" then
         connected = false
-        log("Re-announce requested — reconnecting...", C.yellow)
+        log("Re-announce requested -- reconnecting...", C.yellow)
     end
 end
 
@@ -963,7 +1001,7 @@ def compile_html(session_dir: Path) -> Path | None:
   let cur      = 0;
   let playing  = false;
   let playTimer = null;
-  const PLAY_INTERVAL_MS = 2000;
+  const PLAY_INTERVAL_MS = 1000;
 
   slider.max = slides.length - 1;
 
@@ -1647,7 +1685,16 @@ def _run_calibrate():
         notify("TTS Replay", "Calibration cancelled")
 
 def do_calibrate():
-    threading.Thread(target=_run_calibrate, daemon=True).start()
+    COUNTDOWN = 3
+
+    def _countdown_then_calibrate():
+        for i in range(COUNTDOWN, 0, -1):
+            notify("TTS Replay", f"Switch to TTS\u2026 calibrating in {i}s  (Esc to cancel)")
+            time.sleep(1)
+        notify("TTS Replay", "Draw the battlefield region\u2026")
+        _run_calibrate()
+
+    threading.Thread(target=_countdown_then_calibrate, daemon=True).start()
 
 # ── Taskbar window ────────────────────────────────────────────────────────────
 
