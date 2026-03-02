@@ -1108,8 +1108,8 @@ def compile_html(session_dir: Path) -> Path | None:
     let html = document.documentElement.outerHTML;
     html = html.replace('const strokes = slides.map(() => []);',
                         'const strokes = ' + JSON.stringify(strokes) + ';');
-    html = html.replace(/<script id="notesData" type="application\/json">[\s\S]*?<\/script>/,
-                        '<script id="notesData" type="application/json">' + JSON.stringify(notes) + '<\/script>');
+    html = html.replace(/<script id="notesData" type="application\\/json">[\\s\\S]*?<\\/script>/,
+                        '<script id="notesData" type="application/json">' + JSON.stringify(notes) + '<\\/script>');
     const blob = new Blob([html], {{type: 'text/html'}});
     const a    = document.createElement('a');
     a.href     = URL.createObjectURL(blob);
