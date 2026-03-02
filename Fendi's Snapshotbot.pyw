@@ -39,9 +39,9 @@ def _log(msg: str):
 TTS_LISTEN_PORT  = 39997   # Python HTTP server; Lua WebRequest.post() sends here
 TTS_SEND_PORT    = 39999   # TTS listens as SERVER; Python sends messageID 2 (customMessage) here
 
-CAMERA_SETTLE_MS    = 0     # initial sleep before first sample (0 = check immediately)
+CAMERA_SETTLE_MS    = 1200  # initial sleep before first sample — lets TTS camera animation finish
 STABILITY_POLL_MS   = 80    # ms between samples
-STABILITY_MAX_POLLS = 6     # give up after this many unstable polls
+STABILITY_MAX_POLLS = 15    # give up after this many unstable polls (~1.2 s of polling)
 STABILITY_THRESHOLD = 0.995 # fraction of pixels that must match to call it stable
 
 # ── Drawing-line exact RGB values ─────────────────────────────────────────────
@@ -1563,6 +1563,9 @@ def _delayed_capture(skip_on_unstable: bool = False,
         import mss
         monitor = _get_monitor()
 
+        if CAMERA_SETTLE_MS > 0:
+            time.sleep(CAMERA_SETTLE_MS / 1000)
+
         # One mss context for all stability grabs — avoids repeated init overhead.
         with mss.mss() as sct:
             prev  = _grab_frame(sct, monitor)
@@ -1798,9 +1801,27 @@ def _build_window():
     _apply_ui_state()
     return win
 
+# ── Single-instance guard ─────────────────────────────────────────────────────
+
+def _check_single_instance():
+    import ctypes
+    mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "FendisSnapshotbot_SingleInstance")
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "Already Running",
+            "Fendi's Snapshotbot is already running.\n\nCheck your taskbar.",
+        )
+        root.destroy()
+        sys.exit(0)
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _check_single_instance()
     ensure_assets()
     win = _build_window()
     win.mainloop()
