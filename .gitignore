@@ -1,0 +1,22 @@
+# Claude developer guide
+CLAUDE.md
+
+# PyInstaller intermediate build artifacts
+build/
+
+# Runtime output
+Snapshotbot Replays/
+
+# Generated on first run
+capture_button.lua
+
+# Per-machine config
+replay_config.json
+
+# Debug log
+capture_debug.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
