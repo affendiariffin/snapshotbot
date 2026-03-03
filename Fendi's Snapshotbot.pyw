@@ -437,6 +437,27 @@ function onUpdate()
         end)
     end
 
+    -- -- Camera lock: hold top-down position while capture is in progress ---------
+    -- lookAt is re-applied every frame to override any mouse movement during the
+    -- 1-2s window between triggering capture and receiving capture_done.
+    if capturing then
+        safeCall("onUpdate/lockCamera", function()
+            local pc = self.getVar("pendingPlayerColor")
+            if pc then
+                local p = Player[pc]
+                if p and p.seated then
+                    local yaw = (pc == "Red") and 180 or 0
+                    p.lookAt({
+                        position = TOP_DOWN_POSITION,
+                        pitch    = 90,
+                        yaw      = yaw,
+                        distance = TOP_DOWN_DISTANCE,
+                    })
+                end
+            end
+        end)
+    end
+
     -- -- Pipeline phase 1: position camera + request cache refresh -----------
     -- Phase advances to 2 only after onExternalMessage receives the
     -- refresh_done echo from Python, guaranteeing scores/cards are fresh.
@@ -483,12 +504,29 @@ function onUpdate()
             WebRequest.post("http://127.0.0.1:39997/capture", payload,
                 function(req)
                     if req.is_error then
+                        -- HTTP error: capture_done will never arrive, restore now.
                         log("Signal error: " .. tostring(req.error), C.red)
+                        local p = Player[player_color]
+                        if p then p.setCameraMode("ThirdPerson") end
+                        capturing = false
+                    else
+                        -- Python acknowledged. Camera restore is deferred to
+                        -- onExternalMessage capture_done (fires after the screenshot
+                        -- is actually saved, ~1-2s from now).
+                        self.setVar("pendingRestore", player_color)
+                        -- Fallback: if capture_done never arrives (e.g. Python crash),
+                        -- restore camera after 10 seconds.
+                        Wait.time(function()
+                            if self.getVar("pendingRestore") then
+                                log("Capture timeout -- restoring camera", C.yellow)
+                                local pc = self.getVar("pendingRestore")
+                                local p  = Player[pc]
+                                if p then p.setCameraMode("ThirdPerson") end
+                                self.setVar("pendingRestore", nil)
+                                capturing = false
+                            end
+                        end, 10)
                     end
-                    -- Restore camera as soon as Python responds -- no fixed delay needed.
-                    local p = Player[player_color]
-                    if p then p.setCameraMode("ThirdPerson") end
-                    capturing = false
                 end
             )
         end)
@@ -579,6 +617,13 @@ function onExternalMessage(data)
 
     if data.action == "capture_done" then
         log("Done", C.green)
+        local pc = self.getVar("pendingRestore")
+        if pc then
+            local p = Player[pc]
+            if p then p.setCameraMode("ThirdPerson") end
+            self.setVar("pendingRestore", nil)
+        end
+        capturing = false
     end
 
     if data.action == "reannounce" then
@@ -947,6 +992,8 @@ def compile_html(session_dir: Path) -> Path | None:
   }}
   .doodle-bar .btn {{ padding: 4px 12px; font-size: .8rem; }}
   .doodle-bar .btn.active {{ outline: 2px solid var(--accent); }}
+  .btn-delete {{ color: var(--red); border-color: #4a2020; margin-left: auto; }}
+  .btn-delete:hover {{ background: #3a1a1a; color: #ff6b6b; }}
   .btn-red.active  {{ background: #7a1a1a; outline-color: var(--red); }}
   .btn-blue.active {{ background: #1a2e6e; outline-color: var(--blue); }}
   .btn-draw.active {{ background: #2a3a2a; outline-color: #4caf50; }}
@@ -1004,6 +1051,7 @@ def compile_html(session_dir: Path) -> Path | None:
   <div class="doodle-sep"></div>
   <button class="btn" id="btnUndo">&#8630; Undo</button>
   <button class="btn" id="btnClear">&#10005; Clear Frame</button>
+  <button class="btn btn-delete" id="btnDelete">&#128465; Delete Frame</button>
 </div>
 </div>
 <div id="timestamp"></div>
@@ -1027,13 +1075,16 @@ def compile_html(session_dir: Path) -> Path | None:
 </div>
 </div><!-- end .page-layout -->
 
-<script id="slidesData" type="application/json">[__SLIDES__]</script>
-<script id="notesData" type="application/json">__NOTES__</script>
+<script id="slidesData"  type="application/json">[__SLIDES__]</script>
+<script id="scoresData" type="application/json">{scores_js}</script>
+<script id="cardsData"  type="application/json">{cards_js}</script>
+<script id="timesData"  type="application/json">{times_js}</script>
+<script id="notesData"  type="application/json">__NOTES__</script>
 <script>
   const slides = JSON.parse(document.getElementById('slidesData').textContent);
-  const scores = {scores_js};
-  const cards  = {cards_js};
-  const times  = {times_js};
+  const scores = JSON.parse(document.getElementById('scoresData').textContent);
+  const cards  = JSON.parse(document.getElementById('cardsData').textContent);
+  const times  = JSON.parse(document.getElementById('timesData').textContent);
 
   const img        = document.getElementById('viewer');
   const slider     = document.getElementById('slider');
@@ -1058,6 +1109,7 @@ def compile_html(session_dir: Path) -> Path | None:
   const btnBlue   = document.getElementById('btnBlue');
   const btnUndo   = document.getElementById('btnUndo');
   const btnClear  = document.getElementById('btnClear');
+  const btnDelete = document.getElementById('btnDelete');
   const btnSave   = document.getElementById('btnSave');
 
   // strokes[frameIndex] = [ {{color, points:[{{x,y}},...]}}, ... ]
@@ -1143,6 +1195,23 @@ def compile_html(session_dir: Path) -> Path | None:
   btnUndo.onclick  = () => {{ strokes[cur].pop(); redrawCanvas(); }};
   btnClear.onclick = () => {{ strokes[cur] = []; redrawCanvas(); }};
 
+  btnDelete.onclick = () => {{
+    if (slides.length <= 1) {{ alert('Cannot delete the only frame.'); return; }}
+    if (!confirm('Delete this frame?\n\nThis will be permanent once you Save & Download.')) return;
+    slides.splice(cur, 1);
+    scores.splice(cur, 1);
+    cards.splice(cur, 1);
+    times.splice(cur, 1);
+    strokes.splice(cur, 1);
+    // Update small data islands immediately (cheap — no image data).
+    document.getElementById('scoresData').textContent = JSON.stringify(scores);
+    document.getElementById('cardsData').textContent  = JSON.stringify(cards);
+    document.getElementById('timesData').textContent  = JSON.stringify(times);
+    // slidesData is large — deferred to save time to avoid blocking the UI.
+    slider.max = Math.max(0, slides.length - 1);
+    show(Math.min(cur, slides.length - 1));
+  }};
+
   btnSave.onclick = () => {{
     const notes = {{}};
     NOTEBOOK_KEYS.forEach(k => {{
@@ -1154,6 +1223,8 @@ def compile_html(session_dir: Path) -> Path | None:
                         'const strokes = ' + JSON.stringify(strokes) + ';');
     html = html.replace(/<script id="notesData" type="application\\/json">[\\s\\S]*?<\\/script>/,
                         '<script id="notesData" type="application/json">' + JSON.stringify(notes) + '<\\/script>');
+    html = html.replace(/<script id="slidesData" type="application\\/json">[\\s\\S]*?<\\/script>/,
+                        '<script id="slidesData" type="application/json">' + JSON.stringify(slides) + '<\\/script>');
     const blob = new Blob([html], {{type: 'text/html'}});
     const a    = document.createElement('a');
     a.href     = URL.createObjectURL(blob);
