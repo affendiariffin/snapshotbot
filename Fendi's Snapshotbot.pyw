@@ -609,8 +609,12 @@ def load_config():
     return {}
 
 def save_config(data):
+    global _monitor_cache
+    _monitor_cache = None          # invalidate on any config change
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=2)
+
+_monitor_cache: dict | None = None
 
 def notify(title, msg):
     """Update the status bar label; safe to call from any thread."""
@@ -621,16 +625,18 @@ def notify(title, msg):
 
 # ── Image filter ──────────────────────────────────────────────────────────────
 
-def strip_drawing_lines(filepath: Path) -> bool:
+def _strip_drawing_lines_arr(img_bgr):
+    """Strip TTS drawing lines from an in-memory BGR numpy array.
+
+    Returns (result_bgr, was_filtered).  The input array is not modified.
+    If cv2/numpy are unavailable, or no drawing-colour pixels are found,
+    the original array is returned unchanged with was_filtered=False.
+    """
     try:
         import cv2
         import numpy as np
     except ImportError:
-        return False
-
-    img_bgr = cv2.imread(str(filepath))
-    if img_bgr is None:
-        return False
+        return img_bgr, False
 
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB).astype(np.int16)
     h, w    = img_bgr.shape[:2]
@@ -643,13 +649,12 @@ def strip_drawing_lines(filepath: Path) -> bool:
         mask[hit] = 255
 
     if int(np.count_nonzero(mask)) == 0:
-        return False
+        return img_bgr, False
 
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     mask   = cv2.dilate(mask, kernel, iterations=2)
     result = cv2.inpaint(img_bgr, mask, INPAINT_RADIUS, cv2.INPAINT_TELEA)
-    cv2.imwrite(str(filepath), result, [cv2.IMWRITE_JPEG_QUALITY, FRAME_JPEG_QUALITY])
-    return True
+    return result, True
 
 # ── Screenshot ────────────────────────────────────────────────────────────────
 
@@ -692,23 +697,26 @@ def take_screenshot(prefetched_monitor: dict | None = None,
     filepath = session_dir / filename
 
     try:
-        from PIL import Image
-        import io
+        import cv2
+        import numpy as np
         with mss.mss() as sct:
             raw = sct.grab(monitor)
-            img = Image.frombytes("RGB", raw.size, raw.rgb)
-        if FRAME_MAX_WIDTH and img.width > FRAME_MAX_WIDTH:
-            scale  = FRAME_MAX_WIDTH / img.width
-            img    = img.resize(
-                (FRAME_MAX_WIDTH, round(img.height * scale)),
-                Image.LANCZOS,
-            )
-        img.save(str(filepath), "JPEG", quality=FRAME_JPEG_QUALITY, optimize=True)
+            # BGRA → BGR (cv2 native); copy so the mss buffer can be released.
+            img_bgr = np.frombuffer(raw.bgra, dtype=np.uint8) \
+                        .reshape(raw.height, raw.width, 4)[..., :3].copy()
+        if FRAME_MAX_WIDTH and img_bgr.shape[1] > FRAME_MAX_WIDTH:
+            scale   = FRAME_MAX_WIDTH / img_bgr.shape[1]
+            new_w   = FRAME_MAX_WIDTH
+            new_h   = round(img_bgr.shape[0] * scale)
+            img_bgr = cv2.resize(img_bgr, (new_w, new_h),
+                                 interpolation=cv2.INTER_AREA)
+        # Strip drawing lines in memory — avoids a second disk read/write.
+        img_bgr, stripped = _strip_drawing_lines_arr(img_bgr)
+        cv2.imwrite(str(filepath), img_bgr,
+                    [cv2.IMWRITE_JPEG_QUALITY, FRAME_JPEG_QUALITY])
     except Exception as e:
         notify("TTS Replay", f"\u26a0 Screenshot failed: {e}")
         return
-
-    stripped = strip_drawing_lines(filepath)
 
     with _state_lock:
         entry = {
@@ -1019,9 +1027,10 @@ def compile_html(session_dir: Path) -> Path | None:
 </div>
 </div><!-- end .page-layout -->
 
+<script id="slidesData" type="application/json">[__SLIDES__]</script>
 <script id="notesData" type="application/json">__NOTES__</script>
 <script>
-  const slides = [__SLIDES__];
+  const slides = JSON.parse(document.getElementById('slidesData').textContent);
   const scores = {scores_js};
   const cards  = {cards_js};
   const times  = {times_js};
@@ -1368,7 +1377,8 @@ def compile_html(session_dir: Path) -> Path | None:
     pre, post = html.split("[__SLIDES__]", 1)
     pre = pre.replace("__NOTES__", "{}")
 
-    out = STORE_DIR / f"Game Notebook {session_dir.name}.html"
+    out      = STORE_DIR / f"Game Notebook {session_dir.name}.html"
+    n_frames = len(frames)
     with open(out, "w", encoding="utf-8", buffering=1 << 20) as fh:
         fh.write(pre)
         fh.write("[")
@@ -1380,6 +1390,8 @@ def compile_html(session_dir: Path) -> Path | None:
             fh.write(data)
             fh.write('"')
             del data          # release immediately; don't accumulate
+            if i % 5 == 0 or i == n_frames - 1:
+                notify("TTS Replay", f"Compiling replay\u2026 ({i + 1}/{n_frames})")
         fh.write("]")
         fh.write(post)
 
@@ -1582,12 +1594,22 @@ def _frames_stable(a, b) -> bool:
     return (same / total) >= STABILITY_THRESHOLD
 
 def _get_monitor() -> dict:
-    """Return the configured region, or the monitor TTS is on."""
+    """Return the configured region, or the monitor TTS is on.
+
+    Result is cached in _monitor_cache after the first call and reused until
+    save_config() is called (e.g. after recalibration).
+    """
+    global _monitor_cache
+    if _monitor_cache is not None:
+        return _monitor_cache
+
     import mss
     cfg    = load_config()
     region = cfg.get("region")
     if region and region.get("width", 0) >= 10 and region.get("height", 0) >= 10:
-        return {k: region[k] for k in ("left", "top", "width", "height")}
+        _monitor_cache = {k: region[k] for k in ("left", "top", "width", "height")}
+        return _monitor_cache
+
     tts_monitor = None
     try:
         import ctypes, ctypes.wintypes
@@ -1615,7 +1637,8 @@ def _get_monitor() -> dict:
         _log(f"[monitor] TTS window search failed: {e}")
     with mss.mss() as sct:
         m = tts_monitor or sct.monitors[1]
-        return {"left": m["left"], "top": m["top"], "width": m["width"], "height": m["height"]}
+        _monitor_cache = {"left": m["left"], "top": m["top"], "width": m["width"], "height": m["height"]}
+    return _monitor_cache
 
 def _delayed_capture(skip_on_unstable: bool = False,
                      scores: dict | None = None,
@@ -1672,17 +1695,32 @@ def stop_listening():
     session_dir = _state.get("session_dir")
     if session_dir and _state.get("frame_num", 0) > 0:
         def _compile():
-            notify("TTS Replay", "Compiling replay\u2026")
-            html_path = compile_html(session_dir)
-            if html_path:
+            try:
+                notify("TTS Replay", "Compiling replay\u2026")
+                html_path = compile_html(session_dir)
+                if not html_path:
+                    notify("TTS Replay", "\u26a0 Compile failed \u2014 no frames found")
+                    return
+                # Verify output is non-empty before deleting source frames.
+                if html_path.stat().st_size == 0:
+                    _log("[compile] output file is zero bytes \u2014 source frames preserved")
+                    notify("TTS Replay", "\u26a0 Compile failed \u2014 output file is empty")
+                    return
                 import shutil
                 shutil.rmtree(session_dir, ignore_errors=True)
                 notify("TTS Replay", f"Replay saved: {html_path.name}")
                 import webbrowser
-                webbrowser.open(html_path.as_uri())
-            else:
-                notify("TTS Replay", "No frames to compile")
-        threading.Thread(target=_compile, daemon=True).start()
+                try:
+                    webbrowser.open(html_path.as_uri())
+                except Exception as wb_err:
+                    _log(f"[compile] webbrowser.open failed: {wb_err}")
+                    notify("TTS Replay", f"Saved \u2014 open manually: {html_path}")
+            except Exception as e:
+                import traceback
+                _log(f"[compile] error: {traceback.format_exc()}")
+                notify("TTS Replay", f"\u26a0 Compile error: {e}")
+        # Non-daemon so the thread finishes even if the window is closed.
+        threading.Thread(target=_compile, daemon=False).start()
     else:
         notify("TTS Replay", "Session ended \u2014 no frames captured")
 
