@@ -484,8 +484,6 @@ function onUpdate()
                 function(req)
                     if req.is_error then
                         log("Signal error: " .. tostring(req.error), C.red)
-                    else
-                        log("Captured", C.green)
                     end
                     -- Restore camera as soon as Python responds -- no fixed delay needed.
                     local p = Player[player_color]
@@ -577,6 +575,10 @@ function onExternalMessage(data)
         if self.getVar("phase") == 1 then
             self.setVar("phase", 2)
         end
+    end
+
+    if data.action == "capture_done" then
+        log("Done", C.green)
     end
 
     if data.action == "reannounce" then
@@ -730,7 +732,12 @@ def take_screenshot(prefetched_monitor: dict | None = None,
 # ── HTML export ───────────────────────────────────────────────────────────────
 
 def compile_html(session_dir: Path) -> Path | None:
-    """Encode all turn_*.png frames into a single self-contained HTML replay."""
+    """Encode all turn_*.jpg frames into a single self-contained HTML replay.
+
+    Slides are streamed frame-by-frame directly to the output file so peak
+    memory stays flat regardless of frame count (~5 MB vs ~160 MB for 100 frames
+    with the old all-in-memory approach).
+    """
     import base64
 
     frames = sorted(session_dir.glob("turn_*.jpg"))
@@ -745,19 +752,16 @@ def compile_html(session_dir: Path) -> Path | None:
         for entry in mdata.get("frames", []):
             manifest_frames[entry["filename"]] = entry
 
-    slides           = []
+    # Collect metadata (small — scores/cards/timestamps only, no image data).
     scores_per_frame = []
     cards_per_frame  = []
     timestamps       = []
     for fp in frames:
-        data = base64.b64encode(fp.read_bytes()).decode()
-        slides.append(f'data:image/jpeg;base64,{data}')
         entry = manifest_frames.get(fp.name, {})
         scores_per_frame.append(entry.get("scores"))
         cards_per_frame.append(entry.get("cards"))
         timestamps.append(entry.get("timestamp", ""))
 
-    slides_js = ",\n".join(f'"{s}"' for s in slides)
     scores_js = json.dumps(scores_per_frame)
     cards_js  = json.dumps(cards_per_frame)
     times_js  = json.dumps(timestamps)
@@ -805,13 +809,13 @@ def compile_html(session_dir: Path) -> Path | None:
 
   /* ── Army list side panels ── */
   .army-panel {{ display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }}
-  .army-label {{ font-size: .65rem; text-transform: uppercase;
+  .army-label {{ font-size: .78rem; text-transform: uppercase;
                  letter-spacing: .1em; color: var(--muted); }}
   .army-panel textarea {{
     flex: 1; width: 100%; min-height: 100px; resize: none;
     background: var(--panel); color: var(--text);
     border: 1px solid var(--border); border-radius: 4px;
-    padding: 6px 8px; font-family: inherit; font-size: .82rem; line-height: 1.4;
+    padding: 6px 8px; font-family: inherit; font-size: .95rem; line-height: 1.4;
   }}
   .army-panel textarea:focus {{ outline: none; border-color: var(--accent); }}
 
@@ -858,47 +862,47 @@ def compile_html(session_dir: Path) -> Path | None:
                    border-radius: 8px; padding: 14px; }}
   .player-block.p1 {{ border-top: 3px solid var(--red); }}
   .player-block.p2 {{ border-top: 3px solid var(--blue); }}
-  .player-name {{ font-size: 1rem; font-weight: 700; margin-bottom: 10px; }}
+  .player-name {{ font-size: 1.13rem; font-weight: 700; margin-bottom: 10px; }}
   .player-block.p1 .player-name {{ color: var(--red); }}
   .player-block.p2 .player-name {{ color: var(--blue); }}
-  .player-label {{ font-size: .65rem; text-transform: uppercase;
+  .player-label {{ font-size: .78rem; text-transform: uppercase;
                    letter-spacing: .1em; color: var(--muted); margin-bottom: 2px; }}
   .card-pill {{ background: var(--card); border: 1px solid var(--border);
-                border-radius: 4px; padding: 5px 10px; font-size: .82rem;
+                border-radius: 4px; padding: 5px 10px; font-size: .95rem;
                 color: var(--text); margin-bottom: 6px; }}
   .card-pill.empty {{ color: var(--muted); font-style: italic; }}
-  .player-total {{ font-size: 2rem; font-weight: 800; text-align: center;
+  .player-total {{ font-size: 2.13rem; font-weight: 800; text-align: center;
                    margin-top: 10px; padding-top: 10px;
                    border-top: 1px solid var(--border); }}
   .player-block.p1 .player-total {{ color: var(--red); }}
   .player-block.p2 .player-total {{ color: var(--blue); }}
-  .total-label {{ font-size: .7rem; color: var(--muted); text-align: center;
+  .total-label {{ font-size: .83rem; color: var(--muted); text-align: center;
                   text-transform: uppercase; letter-spacing: .08em; }}
 
     /* ── Round table ── */
   .round-table-wrap {{ background: var(--panel); border: 1px solid var(--border);
                        border-radius: 8px; overflow: hidden; }}
-  .round-table-wrap h3 {{ font-size: .7rem; text-transform: uppercase;
+  .round-table-wrap h3 {{ font-size: .83rem; text-transform: uppercase;
                           letter-spacing: .1em; color: var(--muted);
                           padding: 10px 14px 6px; text-align: center; }}
-  table.rtable {{ width: 100%; border-collapse: collapse; font-size: .82rem; table-layout: fixed; }}
+  table.rtable {{ width: 100%; border-collapse: collapse; font-size: .95rem; table-layout: fixed; }}
   /* cols: p1-name | p1-pri | p1-sc1 | p1-sc2 | p1-chl | divider | round-label | divider | p2-chl | p2-sc2 | p2-sc1 | p2-pri | p2-name */
   .rtable col.c-name {{ width: 72px; }}
   .rtable col.c-num  {{ width: 48px; }}
   .rtable col.c-div  {{ width: 8px; }}
   .rtable col.c-rnd  {{ width: 70px; }}
   .rtable th {{ padding: 4px 4px; text-align: center; color: var(--muted);
-                font-weight: 600; font-size: .68rem; text-transform: uppercase;
+                font-weight: 600; font-size: .81rem; text-transform: uppercase;
                 letter-spacing: .06em; border-bottom: 1px solid var(--border); }}
-  .rtable th.c-name-p1 {{ color: var(--red);  font-weight: 800; font-size: .7rem; text-align: left;  padding-left: 8px; }}
-  .rtable th.c-name-p2 {{ color: var(--blue); font-weight: 800; font-size: .7rem; text-align: right; padding-right: 8px; }}
+  .rtable th.c-name-p1 {{ color: var(--red);  font-weight: 800; font-size: .83rem; text-align: left;  padding-left: 8px; }}
+  .rtable th.c-name-p2 {{ color: var(--blue); font-weight: 800; font-size: .83rem; text-align: right; padding-right: 8px; }}
   .rtable th.p1h  {{ color: var(--red);  }}
   .rtable th.p2h  {{ color: var(--blue); }}
   .rtable td {{ padding: 5px 4px; text-align: center; border-bottom: 1px solid #1a1d28; }}
   .rtable tr:last-child td {{ border-bottom: none; }}
-  .rtable td.c-name-p1 {{ color: var(--muted); font-size: .72rem; text-align: left;  padding-left: 8px; }}
-  .rtable td.c-name-p2 {{ color: var(--muted); font-size: .72rem; text-align: right; padding-right: 8px; }}
-  .rtable td.c-rnd {{ color: var(--muted); font-size: .72rem; text-align: center; }}
+  .rtable td.c-name-p1 {{ color: var(--muted); font-size: .85rem; text-align: left;  padding-left: 8px; }}
+  .rtable td.c-name-p2 {{ color: var(--muted); font-size: .85rem; text-align: right; padding-right: 8px; }}
+  .rtable td.c-rnd {{ color: var(--muted); font-size: .85rem; text-align: center; }}
   .rtable td.tot   {{ font-weight: 700; }}
   .rtable td.tot.p1 {{ color: var(--red); }}
   .rtable td.tot.p2 {{ color: var(--blue); }}
@@ -907,20 +911,20 @@ def compile_html(session_dir: Path) -> Path | None:
                               font-weight: 600; background: #0d0f1a; }}
   .rtable tr.battle-ready td {{ border-bottom: 2px solid var(--border); }}
   .rtable td.c-div, .rtable th.c-div {{ background: var(--border); padding: 0; }}
-  .no-data {{ text-align: center; color: var(--muted); font-size: .85rem; padding: 16px; }}
+  .no-data {{ text-align: center; color: var(--muted); font-size: .98rem; padding: 16px; }}
 
   /* ── Notebook ── */
   .notebook {{ width: 100%; margin-top: 8px; }}
-  .notebook h3 {{ font-size: .7rem; text-transform: uppercase; letter-spacing: .1em;
+  .notebook h3 {{ font-size: .83rem; text-transform: uppercase; letter-spacing: .1em;
                   color: var(--muted); margin-bottom: 8px; }}
   .notebook-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }}
-  .notebook-cell label {{ display: block; font-size: .65rem; text-transform: uppercase;
+  .notebook-cell label {{ display: block; font-size: .78rem; text-transform: uppercase;
                            letter-spacing: .1em; color: var(--muted); margin-bottom: 4px; }}
   .notebook-cell textarea {{
     width: 100%; height: 90px; resize: vertical;
     background: var(--panel); color: var(--text);
     border: 1px solid var(--border); border-radius: 4px;
-    padding: 6px 8px; font-family: inherit; font-size: .82rem;
+    padding: 6px 8px; font-family: inherit; font-size: .95rem;
     line-height: 1.4;
   }}
   .notebook-cell textarea:focus {{ outline: none; border-color: var(--accent); }}
@@ -1017,7 +1021,7 @@ def compile_html(session_dir: Path) -> Path | None:
 
 <script id="notesData" type="application/json">__NOTES__</script>
 <script>
-  const slides = [{slides_js}];
+  const slides = [__SLIDES__];
   const scores = {scores_js};
   const cards  = {cards_js};
   const times  = {times_js};
@@ -1358,8 +1362,27 @@ def compile_html(session_dir: Path) -> Path | None:
 </body>
 </html>"""
 
+    # Split the template at the slides sentinel so we can stream image data
+    # frame-by-frame without ever holding all base64 strings in memory at once.
+    # __NOTES__ is also resolved here (it lives in the pre-sentinel portion).
+    pre, post = html.split("[__SLIDES__]", 1)
+    pre = pre.replace("__NOTES__", "{}")
+
     out = STORE_DIR / f"Game Notebook {session_dir.name}.html"
-    out.write_text(html.replace("__NOTES__", "{}"), encoding="utf-8")
+    with open(out, "w", encoding="utf-8", buffering=1 << 20) as fh:
+        fh.write(pre)
+        fh.write("[")
+        for i, fp in enumerate(frames):
+            if i:
+                fh.write(",\n")
+            data = base64.b64encode(fp.read_bytes()).decode()
+            fh.write('"data:image/jpeg;base64,')
+            fh.write(data)
+            fh.write('"')
+            del data          # release immediately; don't accumulate
+        fh.write("]")
+        fh.write(post)
+
     return out
 
 # ── TTS TCP listener ───────────────────────────────────────────────────────────
@@ -1623,6 +1646,7 @@ def _delayed_capture(skip_on_unstable: bool = False,
             notify("TTS Replay", "\u26a0 Camera may not have settled \u2014 frame captured anyway")
 
         take_screenshot(prefetched_monitor=monitor, scores=scores, cards=cards)
+        _send_to_tts({"action": "capture_done"})
     except Exception as e:
         import traceback
         notify("TTS Replay", f"\u26a0 Capture error: {e}  {traceback.format_exc()[-300:]}")
