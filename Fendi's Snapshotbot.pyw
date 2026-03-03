@@ -796,8 +796,27 @@ def compile_html(session_dir: Path) -> Path | None:
   .btn-save-main {{ background: #2dce6a; color: #000; font-weight: 700;
                     border-color: #2dce6a; padding: 8px 28px; font-size: .9rem; }}
 
+  /* ── Page layout ── */
+  .page-layout {{
+    display: grid; grid-template-columns: 1fr 70vw 1fr;
+    width: 100%; gap: 12px; align-items: stretch;
+  }}
+  .center-col {{ display: flex; flex-direction: column; gap: 14px; }}
+
+  /* ── Army list side panels ── */
+  .army-panel {{ display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }}
+  .army-label {{ font-size: .65rem; text-transform: uppercase;
+                 letter-spacing: .1em; color: var(--muted); }}
+  .army-panel textarea {{
+    flex: 1; width: 100%; min-height: 100px; resize: none;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 8px; font-family: inherit; font-size: .82rem; line-height: 1.4;
+  }}
+  .army-panel textarea:focus {{ outline: none; border-color: var(--accent); }}
+
   /* ── Shared cards (above viewer) ── */
-  #sharedCardsBar {{ width: 100%; max-width: 70vw; display: none; }}
+  #sharedCardsBar {{ width: 100%; display: none; }}
   #sharedCardsBar.visible {{ display: grid;
     grid-template-columns: 1fr 1fr 1fr; gap: 10px; }}
   .shared-card {{ background: var(--panel); border: 1px solid var(--border);
@@ -807,7 +826,7 @@ def compile_html(session_dir: Path) -> Path | None:
   #viewer {{ display: block; }}
   .viewer-wrap {{
     display: flex; flex-direction: column; align-items: center;
-    width: 100%; max-width: 70vw; gap: 0;
+    width: 100%; gap: 0;
   }}
   .viewer-wrap #viewer {{
     width: 100%; height: 80vh; object-fit: contain; background: #000;
@@ -832,7 +851,7 @@ def compile_html(session_dir: Path) -> Path | None:
   #timestamp {{ font-size: .75rem; color: var(--muted); text-align: center; }}
 
   /* ── Data panel ── */
-  #dataPanel {{ width: 100%; max-width: 70vw; display: none; flex-direction: column; gap: 12px; }}
+  #dataPanel {{ width: 100%; display: none; flex-direction: column; gap: 12px; }}
   #dataPanel.visible {{ display: flex; }}
   .players {{ display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }}
   .player-block {{ background: var(--panel); border: 1px solid var(--border);
@@ -891,7 +910,7 @@ def compile_html(session_dir: Path) -> Path | None:
   .no-data {{ text-align: center; color: var(--muted); font-size: .85rem; padding: 16px; }}
 
   /* ── Notebook ── */
-  .notebook {{ width: 100%; max-width: 70vw; margin-top: 8px; }}
+  .notebook {{ width: 100%; margin-top: 8px; }}
   .notebook h3 {{ font-size: .7rem; text-transform: uppercase; letter-spacing: .1em;
                   color: var(--muted); margin-bottom: 8px; }}
   .notebook-grid {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }}
@@ -944,6 +963,12 @@ def compile_html(session_dir: Path) -> Path | None:
   <button class="btn btn-save-main" id="btnSave">&#8681; Save &amp; Download</button>
 </div>
 
+<div class="page-layout">
+<div class="army-panel">
+  <div class="army-label" id="armyLabelLeft">Red Army List</div>
+  <textarea id="note_army_red" placeholder="Army list…"></textarea>
+</div>
+<div class="center-col">
 <!-- Shared cards bar — above viewer, populated by JS -->
 <div id="sharedCardsBar"></div>
 
@@ -983,6 +1008,12 @@ def compile_html(session_dir: Path) -> Path | None:
     <div class="notebook-cell"><label>Round 5</label><textarea id="note_round5" placeholder="Round 5 notes…"></textarea></div>
   </div>
 </div>
+</div><!-- end .center-col -->
+<div class="army-panel">
+  <div class="army-label" id="armyLabelRight">Blue Army List</div>
+  <textarea id="note_army_blue" placeholder="Army list…"></textarea>
+</div>
+</div><!-- end .page-layout -->
 
 <script id="notesData" type="application/json">__NOTES__</script>
 <script>
@@ -1308,7 +1339,7 @@ def compile_html(session_dir: Path) -> Path | None:
   show(0);
 
   /* ── Notebook ── */
-  const NOTEBOOK_KEYS = ['deployment','round1','round2','round3','round4','round5'];
+  const NOTEBOOK_KEYS = ['deployment','round1','round2','round3','round4','round5','army_red','army_blue'];
 
   // Load saved notes if embedded, otherwise empty
   const savedNotes = JSON.parse(document.getElementById('notesData').textContent);
@@ -1316,6 +1347,13 @@ def compile_html(session_dir: Path) -> Path | None:
     const ta = document.getElementById('note_' + k);
     if (ta && savedNotes[k]) ta.value = savedNotes[k];
   }});
+
+  // Label army panels with actual player names
+  const firstScores = scores.find(s => s);
+  if (firstScores) {{
+    document.getElementById('armyLabelLeft').textContent  = (firstScores.red?.name  || 'Red')  + ' Army List';
+    document.getElementById('armyLabelRight').textContent = (firstScores.blue?.name || 'Blue') + ' Army List';
+  }}
 </script>
 </body>
 </html>"""
