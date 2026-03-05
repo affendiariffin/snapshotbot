@@ -7,7 +7,7 @@ HTML replay file when the session ends.
 A small window sits on the taskbar with session controls.
 
 Requirements (for running from source):
-  pip install mss Pillow opencv-python-headless numpy
+  pip install mss Pillow opencv-python-headless numpy dxcam
 """
 
 import json
@@ -35,6 +35,8 @@ def _log(msg: str):
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
+
+VERSION = "1.2.7"  # bump on every release to confirm correct build is running
 
 TTS_LISTEN_PORT  = 39997   # Python HTTP server; Lua WebRequest.post() sends here
 TTS_SEND_PORT    = 39999   # TTS listens as SERVER; Python sends messageID 2 (customMessage) here
@@ -484,6 +486,25 @@ function onUpdate()
                 yaw      = yaw,
                 distance = TOP_DOWN_DISTANCE,
             })
+
+            -- Safety net: if Python crashes BEFORE posting /capture (during the
+            -- refresh handshake), pendingRestore is never set so the phase-2
+            -- fallback timer is never scheduled.  This timer covers that gap --
+            -- it fires if we are still stuck at phase 1 after 15 s.
+            self.setVar("phase1SafetyFired", false)
+            Wait.time(function()
+                if self.getVar("phase") == 1 or self.getVar("phase") == 2 then
+                    if not self.getVar("pendingRestore") then
+                        log("Phase-1 safety timeout -- restoring camera", C.yellow)
+                        local pc = self.getVar("pendingPlayerColor")
+                        local p  = pc and Player[pc]
+                        if p then p.setCameraMode("ThirdPerson") end
+                        self.setVar("phase", 0)
+                        capturing = false
+                    end
+                end
+            end, 15)
+
             -- Stay at phase 1 until Python echoes refresh_done back via
             -- onExternalMessage, which will refresh the cache then set phase 2.
             WebRequest.post("http://127.0.0.1:39997/refresh", '{"action":"refresh"}',
@@ -523,8 +544,10 @@ function onUpdate()
                                 local p  = Player[pc]
                                 if p then p.setCameraMode("ThirdPerson") end
                                 self.setVar("pendingRestore", nil)
-                                capturing = false
+                            else
+                                log("Capture timeout (no pendingRestore) -- releasing lock", C.yellow)
                             end
+                            capturing = false
                         end, 10)
                     end
                 end
@@ -744,11 +767,26 @@ def take_screenshot(prefetched_monitor: dict | None = None,
     try:
         import cv2
         import numpy as np
-        with mss.mss() as sct:
-            raw = sct.grab(monitor)
-            # BGRA → BGR (cv2 native); copy so the mss buffer can be released.
-            img_bgr = np.frombuffer(raw.bgra, dtype=np.uint8) \
-                        .reshape(raw.height, raw.width, 4)[..., :3].copy()
+        region = (monitor["left"], monitor["top"],
+                  monitor["left"] + monitor["width"],
+                  monitor["top"]  + monitor["height"])
+        img_bgr = None
+        cam = _get_dxcam()
+        if cam:
+            try:
+                frame = cam.grab(region=region)
+                if frame is not None:
+                    img_bgr = frame.copy()
+                else:
+                    _log("[dxcam] grab returned None in take_screenshot — falling back to mss")
+            except Exception as e:
+                _log(f"[dxcam] grab error in take_screenshot, falling back to mss: {e}")
+        if img_bgr is None:
+            import mss
+            with mss.mss() as sct:
+                raw = sct.grab(monitor)
+                img_bgr = np.frombuffer(raw.bgra, dtype=np.uint8) \
+                            .reshape(raw.height, raw.width, 4)[..., :3].copy()
         if FRAME_MAX_WIDTH and img_bgr.shape[1] > FRAME_MAX_WIDTH:
             scale   = FRAME_MAX_WIDTH / img_bgr.shape[1]
             new_w   = FRAME_MAX_WIDTH
@@ -885,10 +923,19 @@ def compile_html(session_dir: Path) -> Path | None:
     display: flex; flex-direction: column; align-items: center;
     width: 100%; gap: 0;
   }}
+  .viewer-img-wrap {{
+    position: relative; display: flex;
+    width: 100%; height: 80vh;
+    justify-content: center; align-items: center;
+    background: #000; border-radius: 6px 6px 0 0;
+    border: 2px solid var(--border);
+    box-shadow: 0 4px 24px #0008;
+    overflow: hidden;
+  }}
   .viewer-wrap #viewer {{
-    width: 100%; height: 80vh; object-fit: contain; background: #000;
-    border: 2px solid var(--border); border-radius: 6px 6px 0 0;
-    box-shadow: 0 4px 24px #0008; display: block;
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block; border-radius: 6px 6px 0 0;
   }}
   .controls {{
     display: flex; align-items: center; gap: 8px;
@@ -1007,10 +1054,6 @@ def compile_html(session_dir: Path) -> Path | None:
     border-radius: 6px 6px 0 0;
   }}
   #doodleCanvas.active {{ pointer-events: all; cursor: crosshair; }}
-  .viewer-img-wrap {{
-    position: relative; display: flex;
-    width: 100%; justify-content: center;
-  }}
 </style>
 </head>
 <body>
@@ -1197,7 +1240,8 @@ def compile_html(session_dir: Path) -> Path | None:
 
   btnDelete.onclick = () => {{
     if (slides.length <= 1) {{ alert('Cannot delete the only frame.'); return; }}
-    if (!confirm('Delete this frame?\n\nThis will be permanent once you Save & Download.')) return;
+    const _msg = 'Delete this frame?' + String.fromCharCode(10,10) + 'This will be permanent once you Save & Download.';
+    if (!confirm(_msg)) return;
     slides.splice(cur, 1);
     scores.splice(cur, 1);
     cards.splice(cur, 1);
@@ -1221,10 +1265,15 @@ def compile_html(session_dir: Path) -> Path | None:
     let html = document.documentElement.outerHTML;
     html = html.replace('const strokes = slides.map(() => []);',
                         'const strokes = ' + JSON.stringify(strokes) + ';');
-    html = html.replace(/<script id="notesData" type="application\\/json">[\\s\\S]*?<\\/script>/,
-                        '<script id="notesData" type="application/json">' + JSON.stringify(notes) + '<\\/script>');
-    html = html.replace(/<script id="slidesData" type="application\\/json">[\\s\\S]*?<\\/script>/,
-                        '<script id="slidesData" type="application/json">' + JSON.stringify(slides) + '<\\/script>');
+    const notesTag  = '<scr' + 'ipt id="notesData" type="application/json">';
+    const slidesTag = '<scr' + 'ipt id="slidesData" type="application/json">';
+    const closeTag  = '<\/scr' + 'ipt>';
+    html = html.replace(
+        new RegExp(notesTag  + '[\\s\\S]*?' + closeTag),
+        notesTag  + JSON.stringify(notes)  + closeTag);
+    html = html.replace(
+        new RegExp(slidesTag + '[\\s\\S]*?' + closeTag),
+        slidesTag + JSON.stringify(slides) + closeTag);
     const blob = new Blob([html], {{type: 'text/html'}});
     const a    = document.createElement('a');
     a.href     = URL.createObjectURL(blob);
@@ -1446,7 +1495,7 @@ def compile_html(session_dir: Path) -> Path | None:
     # frame-by-frame without ever holding all base64 strings in memory at once.
     # __NOTES__ is also resolved here (it lives in the pre-sentinel portion).
     pre, post = html.split("[__SLIDES__]", 1)
-    pre = pre.replace("__NOTES__", "{}")
+    post = post.replace("__NOTES__", "{}")
 
     out      = STORE_DIR / f"Game Notebook {session_dir.name}.html"
     n_frames = len(frames)
@@ -1643,14 +1692,55 @@ def _listener_thread():
         _log(f"[listener] bind failed: {e}")
 
 
+def _grab_frame_mss(sct, monitor: dict):
+    """Grab via mss (BitBlt). Works on windowed/borderless but not HAGS fullscreen."""
+    import numpy as np
+    raw = sct.grab(monitor)
+    return np.frombuffer(raw.bgra, dtype=np.uint8).reshape(raw.height, raw.width, 4)[..., :3]
+
+
+# dxcam camera instance — created once, reused across captures.
+_dxcam_instance = None
+_dxcam_lock     = threading.Lock()
+
+def _get_dxcam():
+    """Return a shared dxcam.DXCamera, or None if dxcam is unavailable."""
+    global _dxcam_instance
+    with _dxcam_lock:
+        if _dxcam_instance is not None:
+            return _dxcam_instance
+        try:
+            import dxcam
+            _dxcam_instance = dxcam.create(output_color="BGR")
+            _log("[dxcam] initialised — using Desktop Duplication API")
+        except Exception as e:
+            _log(f"[dxcam] unavailable, falling back to mss: {e}")
+            _dxcam_instance = False   # sentinel: don't retry
+        return _dxcam_instance
+
+
 def _grab_frame(sct, monitor: dict):
-    """Grab a screen region and return it as a numpy uint8 array (H×W×3 RGB).
+    """Grab a screen region and return it as a numpy uint8 array (H×W×3 BGR).
+
+    Tries dxcam first (Desktop Duplication API — works with HAGS and GPU-composed
+    fullscreen frames that BitBlt/mss cannot capture).  Falls back to mss if
+    dxcam is unavailable or returns None.
     Caller owns the mss context so it can be reused across the stability loop.
     """
     import numpy as np
-    raw = sct.grab(monitor)
-    # mss gives BGRA; slice off alpha and keep the 3 colour channels.
-    return np.frombuffer(raw.bgra, dtype=np.uint8).reshape(raw.height, raw.width, 4)[..., :3]
+    region = (monitor["left"], monitor["top"],
+              monitor["left"] + monitor["width"],
+              monitor["top"]  + monitor["height"])
+    cam = _get_dxcam()
+    if cam:
+        try:
+            frame = cam.grab(region=region)
+            if frame is not None:
+                return frame   # already BGR H×W×3
+            _log("[dxcam] grab returned None — falling back to mss for this frame")
+        except Exception as e:
+            _log(f"[dxcam] grab error, falling back to mss: {e}")
+    return _grab_frame_mss(sct, monitor)
 
 
 def _frames_stable(a, b) -> bool:
@@ -1663,6 +1753,36 @@ def _frames_stable(a, b) -> bool:
     same = int(np.count_nonzero(np.all(a == b, axis=2)))
     total = a.shape[0] * a.shape[1]
     return (same / total) >= STABILITY_THRESHOLD
+
+def _find_tts_hwnd() -> int | None:
+    """Return the HWND of the Tabletop Simulator window, or None.
+
+    Uses c_void_p for the HWND so it is safe on 64-bit Windows where a plain
+    c_int silently truncates the handle and the window is never found.
+    The WNDENUMPROC signature must also use c_void_p for both parameters to
+    match the actual Win32 callback prototype (HWND, LPARAM are pointer-sized).
+    """
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(256)
+        # HWND and LPARAM are both pointer-sized — use c_void_p, not c_int.
+        WNDENUMPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        found = ctypes.c_void_p(0)
+
+        def _enum(hwnd, _):
+            if ctypes.windll.user32.IsWindowVisible(hwnd):
+                ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
+                if "tabletop simulator" in buf.value.lower():
+                    found.value = hwnd
+            return True
+
+        ctypes.windll.user32.EnumWindows(WNDENUMPROC(_enum), 0)
+        return found.value  # None if never set, int HWND otherwise
+    except Exception as e:
+        _log(f"[hwnd] EnumWindows failed: {e}")
+        return None
+
 
 def _get_monitor() -> dict:
     """Return the configured region, or the monitor TTS is on.
@@ -1682,30 +1802,27 @@ def _get_monitor() -> dict:
         return _monitor_cache
 
     tts_monitor = None
-    try:
-        import ctypes, ctypes.wintypes
-        buf  = ctypes.create_unicode_buffer(256)
-        rect = ctypes.wintypes.RECT()
-        found = {}
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_int))
-        def _enum(hwnd, _):
-            if ctypes.windll.user32.IsWindowVisible(hwnd):
-                ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
-                if "tabletop simulator" in buf.value.lower():
-                    ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                    found["rect"] = (rect.left, rect.top, rect.right, rect.bottom)
-            return True
-        ctypes.windll.user32.EnumWindows(WNDENUMPROC(_enum), 0)
-        if found:
-            wx, wy = found["rect"][0], found["rect"][1]
+    hwnd = _find_tts_hwnd()
+    if hwnd:
+        try:
+            import ctypes, ctypes.wintypes
+            rect = ctypes.wintypes.RECT()
+            ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            wx, wy = rect.left, rect.top
             with mss.mss() as sct:
                 for m in sct.monitors[1:]:
                     if m["left"] <= wx < m["left"] + m["width"] and \
                        m["top"]  <= wy < m["top"]  + m["height"]:
                         tts_monitor = m
+                        _log(f"[monitor] TTS found on monitor left={m['left']} top={m['top']}")
                         break
-    except Exception as e:
-        _log(f"[monitor] TTS window search failed: {e}")
+            if not tts_monitor:
+                _log(f"[monitor] TTS window at ({wx},{wy}) didn't match any monitor — using monitor 1")
+        except Exception as e:
+            _log(f"[monitor] rect lookup failed: {e}")
+    else:
+        _log("[monitor] TTS window not found via EnumWindows — using monitor 1")
+
     with mss.mss() as sct:
         m = tts_monitor or sct.monitors[1]
         _monitor_cache = {"left": m["left"], "top": m["top"], "width": m["width"], "height": m["height"]}
@@ -1738,6 +1855,18 @@ def _delayed_capture(skip_on_unstable: bool = False,
                 notify("TTS Replay", "\u26a0 Auto-capture skipped \u2014 camera still moving")
                 return
             notify("TTS Replay", "\u26a0 Camera may not have settled \u2014 frame captured anyway")
+
+        # Bring TTS to the foreground so mss doesn't grab a black/occluded frame.
+        try:
+            import ctypes
+            hwnd = _find_tts_hwnd()
+            if hwnd:
+                # SW_RESTORE (9) un-minimises if needed; then SetForegroundWindow
+                ctypes.windll.user32.ShowWindow(hwnd, 9)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                time.sleep(0.15)  # let the window paint before grabbing
+        except Exception as fg_err:
+            _log(f"[capture] foreground-focus failed (non-fatal): {fg_err}")
 
         take_screenshot(prefetched_monitor=monitor, scores=scores, cards=cards)
         _send_to_tts({"action": "capture_done"})
@@ -1932,7 +2061,7 @@ def _build_window():
     import tkinter as tk
 
     win = tk.Tk()
-    win.title("Fendi's Snapshotbot")
+    win.title(f"Fendi's Snapshotbot v{VERSION}")
     win.configure(bg="#1a1e26")
     win.resizable(False, False)
     win.protocol("WM_DELETE_WINDOW", _exit_app)
@@ -1992,6 +2121,7 @@ def _check_single_instance():
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    _log(f"[startup] version {VERSION}")
     _check_single_instance()
     ensure_assets()
     win = _build_window()
