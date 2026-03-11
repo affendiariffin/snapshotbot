@@ -41,7 +41,7 @@ VERSION = "1.2.7"  # bump on every release to confirm correct build is running
 TTS_LISTEN_PORT  = 39997   # Python HTTP server; Lua WebRequest.post() sends here
 TTS_SEND_PORT    = 39999   # TTS listens as SERVER; Python sends messageID 2 (customMessage) here
 
-CAMERA_SETTLE_MS    = 1200  # initial sleep before first sample — lets TTS camera animation finish
+CAMERA_SETTLE_MS    = 200   # initial sleep before first sample — lets TTS camera animation finish
 STABILITY_POLL_MS   = 80    # ms between samples
 STABILITY_MAX_POLLS = 15    # give up after this many unstable polls (~1.2 s of polling)
 STABILITY_THRESHOLD = 0.995 # fraction of pixels that must match to call it stable
@@ -1840,7 +1840,8 @@ def _delayed_capture(skip_on_unstable: bool = False,
 
         # One mss context for all stability grabs — avoids repeated init overhead.
         with mss.mss() as sct:
-            prev  = _grab_frame(sct, monitor)
+            baseline = _grab_frame(sct, monitor)
+            prev  = baseline
             polls = 0
             while polls < STABILITY_MAX_POLLS:
                 time.sleep(STABILITY_POLL_MS / 1000)
@@ -1851,10 +1852,16 @@ def _delayed_capture(skip_on_unstable: bool = False,
                 polls += 1
 
         if polls == STABILITY_MAX_POLLS:
-            if skip_on_unstable:
+            # Baseline fallback: if camera was already at the target the whole time,
+            # consecutive frames differ only by minor lookAt jitter — but baseline ≈ curr.
+            if _frames_stable(baseline, curr):
+                pass
+            elif skip_on_unstable:
                 notify("TTS Replay", "\u26a0 Auto-capture skipped \u2014 camera still moving")
                 return
-            notify("TTS Replay", "\u26a0 Camera may not have settled \u2014 frame captured anyway")
+            else:
+                notify("TTS Replay",
+                       "\u26a0 Camera may not have settled \u2014 frame captured anyway")
 
         # Bring TTS to the foreground so mss doesn't grab a black/occluded frame.
         try:
