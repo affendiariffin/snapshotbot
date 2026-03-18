@@ -1269,10 +1269,10 @@ def compile_html(session_dir: Path) -> Path | None:
     const slidesTag = '<scr' + 'ipt id="slidesData" type="application/json">';
     const closeTag  = '<\/scr' + 'ipt>';
     html = html.replace(
-        new RegExp(notesTag  + '[\\s\\S]*?' + closeTag),
+        new RegExp(notesTag  + '[\\\\s\\\\S]*?' + closeTag),
         notesTag  + JSON.stringify(notes)  + closeTag);
     html = html.replace(
-        new RegExp(slidesTag + '[\\s\\S]*?' + closeTag),
+        new RegExp(slidesTag + '[\\\\s\\\\S]*?' + closeTag),
         slidesTag + JSON.stringify(slides) + closeTag);
     const blob = new Blob([html], {{type: 'text/html'}});
     const a    = document.createElement('a');
