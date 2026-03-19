@@ -985,10 +985,10 @@ def compile_html(session_dir: Path) -> Path | None:
   .round-table-wrap h3 {{ font-size: .83rem; text-transform: uppercase;
                           letter-spacing: .1em; color: var(--muted);
                           padding: 10px 14px 6px; text-align: center; }}
-  table.rtable {{ width: 100%; border-collapse: collapse; font-size: .95rem; table-layout: fixed; }}
+  table.rtable {{ width: auto; margin: 0 auto; border-collapse: collapse; font-size: .95rem; table-layout: fixed; }}
   /* cols: p1-name | p1-pri | p1-sc1 | p1-sc2 | p1-chl | divider | round-label | divider | p2-chl | p2-sc2 | p2-sc1 | p2-pri | p2-name */
   .rtable col.c-name {{ width: 72px; }}
-  .rtable col.c-num  {{ width: 48px; }}
+  .rtable col.c-num  {{ width: 24px; }}
   .rtable col.c-div  {{ width: 8px; }}
   .rtable col.c-rnd  {{ width: 70px; }}
   .rtable th {{ padding: 4px 4px; text-align: center; color: var(--muted);
