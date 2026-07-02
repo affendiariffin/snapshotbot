@@ -72,8 +72,8 @@ def snapshot():
 
 @api.get("/api/session/<slug>/data")
 def session_data(slug):
-    # Live viewers poll this; finalizing here drops the LIVE badge ~10 min after
-    # the last player leaves TTS, without waiting for the next session create.
+    # Live viewers poll this; finalizing here drops the LIVE badge ~90s after the
+    # last player leaves TTS, without waiting for the next session create.
     db.finalize_stale_sessions()
     after_id = request.args.get("after", 0, type=int)
     bundle = db.get_session_bundle(slug, after_id)

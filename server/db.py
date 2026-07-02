@@ -8,8 +8,9 @@ from psycopg.types.json import Jsonb
 # Retention window for sessions and everything under them (Fendi: 30 days, no archive).
 RETENTION_DAYS = 30
 # Sessions end by abandonment: the token heartbeats every 60s while TTS is open, so
-# this much silence means everyone left the game (no End button by design).
-STALE_MINUTES = 10
+# one missed beat plus poll jitter means everyone left (no End button by design).
+# A false seal (network blip) self-heals: the next snapshot reopens the session.
+STALE_SECONDS = 90
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sb_sessions (
@@ -95,10 +96,13 @@ def _session_id(conn, slug, open_only=False):
 
 
 def add_snapshot(slug, round_, mark, scores, cards, models):
+    # A snapshot for a sealed session reopens it: the seal only means "currently
+    # silent", so a returning token (blip recovered, save reloaded) resumes recording.
     with get_conn() as conn:
-        sid = _session_id(conn, slug, open_only=True)
+        sid = _session_id(conn, slug)
         if sid is None:
             return None
+        conn.execute("UPDATE sb_sessions SET ended_at = NULL WHERE id = %s", (sid,))
         row = conn.execute(
             "INSERT INTO sb_snapshots (session_id, round, mark, scores, cards, models)"
             " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
@@ -119,9 +123,9 @@ def finalize_stale_sessions():
             WHERE s.ended_at IS NULL
               AND COALESCE(
                 (SELECT max(taken_at) FROM sb_snapshots WHERE session_id = s.id),
-                s.started_at) < now() - make_interval(mins => %s)
+                s.started_at) < now() - make_interval(secs => %s)
             """,
-            (STALE_MINUTES,),
+            (STALE_SECONDS,),
         )
         return cur.rowcount
 

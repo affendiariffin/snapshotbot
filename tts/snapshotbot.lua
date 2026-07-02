@@ -251,7 +251,7 @@ function onLoad(saved)
         end
     end
     -- No Start/Stop/End by design: recording begins when an LCT table is detected and
-    -- the session seals itself server-side after ~10 minutes of silence (players left).
+    -- the session seals itself server-side after ~90s of silence (players left TTS).
     self.createButton({
         label = "📍 Mark", click_function = "clickMark", function_owner = self,
         position = {-0.45, 0.15, 0}, width = 620, height = 260, font_size = 120,
