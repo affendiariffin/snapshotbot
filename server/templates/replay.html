@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snapshotbot replay</title>
+<style>
+  :root { --red:#e05555; --blue:#5588e0; --bg:#0d0f14; --panel:#13161e; --card:#1c2030;
+          --border:#252840; --text:#d0d6e8; --muted:#5a6080; --accent:#f0c040; }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;
+       display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:20px 16px;gap:14px}
+  .header{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap}
+  .header-text{text-align:center}
+  .header h1{font-size:1.3rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+  .header h1 a{color:inherit;text-decoration:none}
+  .header .sub{font-size:.75rem;color:var(--muted);margin-top:2px}
+  .livebadge{background:#0e2a18;border:1px solid #1e5a34;color:#2dce6a;border-radius:12px;
+    padding:4px 12px;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;display:none}
+  .livebadge.on{display:inline-block}
+  .page-layout{display:grid;grid-template-columns:1fr 70vw 1fr;width:100%;gap:12px;align-items:stretch}
+  .center-col{display:flex;flex-direction:column;gap:14px}
+  .army-panel{display:flex;flex-direction:column;gap:6px;padding-top:4px}
+  .army-label{font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+  .army-panel textarea{flex:1;width:100%;min-height:100px;resize:none;background:var(--panel);
+    color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 8px;
+    font-family:inherit;font-size:.95rem;line-height:1.4}
+  #sharedCardsBar{width:100%;display:grid;grid-template-columns:1.2fr 1fr .8fr;gap:10px}
+  .shared-card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
+  .atk-def{font-size:.78rem;color:var(--muted);margin-top:2px}
+  .viewer-wrap{display:flex;flex-direction:column;align-items:center;width:100%;gap:0}
+  .board-wrap{position:relative;width:100%;height:74vh;background:#05070c;
+    border-radius:6px 6px 0 0;border:2px solid var(--border);box-shadow:0 4px 24px #0008;overflow:hidden}
+  #board{width:100%;height:100%;display:block;cursor:grab}
+  #board.ruler,#board.doodle{cursor:crosshair}
+  #tooltip{position:absolute;pointer-events:none;background:#000c;border:1px solid var(--border);
+    border-radius:4px;padding:4px 8px;font-size:.8rem;display:none;z-index:5;white-space:nowrap}
+  .toolbar{display:flex;align-items:center;gap:6px;width:100%;background:var(--panel);
+    border:2px solid var(--border);border-top:none;padding:6px 8px;flex-wrap:wrap}
+  .btn{background:var(--card);color:var(--text);border:1px solid var(--border);padding:6px 14px;
+    cursor:pointer;border-radius:4px;font-size:.85rem;white-space:nowrap;flex-shrink:0}
+  .btn:hover{background:var(--border)}
+  .btn.active{outline:2px solid var(--accent)}
+  .btn.dred.on{background:#7a1a1a;outline:2px solid var(--red)}
+  .btn.dblue.on{background:#1a2e6e;outline:2px solid var(--blue)}
+  .tool-sep{width:1px;height:20px;background:var(--border);margin:0 2px}
+  .hint{margin-left:auto;font-size:.75rem;color:var(--muted)}
+  .controls{display:flex;align-items:center;gap:8px;width:100%;background:var(--panel);
+    border:2px solid var(--border);border-top:none;border-radius:0 0 6px 6px;padding:6px 8px;flex-wrap:wrap}
+  #slider{flex:1;min-width:200px;accent-color:var(--accent)}
+  #label{min-width:150px;text-align:right;font-size:.85rem;color:var(--muted);flex-shrink:0}
+  .bookmark{background:#2a2410;border:1px solid #6a5a20;color:var(--accent);border-radius:12px;
+    padding:3px 10px;font-size:.75rem;cursor:pointer;flex-shrink:0}
+  .bookmark:hover{background:#3a3418}
+  #dataPanel{width:100%;display:flex;flex-direction:column;gap:12px}
+  .players{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .player-block{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:14px}
+  .player-block.p1{border-top:3px solid var(--red)}
+  .player-block.p2{border-top:3px solid var(--blue)}
+  .player-name{font-size:1.13rem;font-weight:700;margin-bottom:10px}
+  .player-block.p1 .player-name{color:var(--red)}
+  .player-block.p2 .player-name{color:var(--blue)}
+  .player-label{font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin:8px 0 3px}
+  .card-pill{background:var(--card);border:1px solid var(--border);border-radius:4px;
+    padding:5px 10px;font-size:.95rem;margin-bottom:6px}
+  .card-pill.empty{color:var(--muted);font-style:italic}
+  a.pill-link{display:block;color:var(--text);text-decoration:none}
+  a.pill-link:hover{border-color:var(--accent)}
+  .pill-tag{float:right;font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}
+  .player-total{font-size:2.13rem;font-weight:800;text-align:center;margin-top:10px;padding-top:10px;
+    border-top:1px solid var(--border)}
+  .player-block.p1 .player-total{color:var(--red)}
+  .player-block.p2 .player-total{color:var(--blue)}
+  .total-label{font-size:.83rem;color:var(--muted);text-align:center;text-transform:uppercase;letter-spacing:.08em}
+  .round-table-wrap{background:var(--panel);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+  .round-table-wrap h3{font-size:.83rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);
+    padding:10px 14px 6px;text-align:center}
+  table.rtable{width:100%;border-collapse:collapse;font-size:.95rem;table-layout:fixed}
+  .rtable col.c-name{width:110px}.rtable col.c-num{width:56px}.rtable col.c-div{width:8px}.rtable col.c-rnd{width:110px}
+  .rtable th{padding:4px;text-align:center;color:var(--muted);font-weight:600;font-size:.81rem;
+    text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)}
+  .rtable th.c-name-p1{color:var(--red);font-weight:800;text-align:left;padding-left:8px}
+  .rtable th.c-name-p2{color:var(--blue);font-weight:800;text-align:right;padding-right:8px}
+  .rtable th.p1h{color:var(--red)}.rtable th.p2h{color:var(--blue)}
+  .rtable td{padding:5px 4px;text-align:center;border-bottom:1px solid #1a1d28}
+  .rtable tr:last-child td{border-bottom:none}
+  .rtable td.c-name-p1{color:var(--muted);font-size:.85rem;text-align:left;padding-left:8px}
+  .rtable td.c-name-p2{color:var(--muted);font-size:.85rem;text-align:right;padding-right:8px}
+  .rtable td.c-rnd{color:var(--muted);font-size:.85rem}
+  .rtable td.tot{font-weight:700}
+  .rtable td.tot.p1{color:var(--red)}.rtable td.tot.p2{color:var(--blue)}
+  .rtable tr.dim td{opacity:.35}
+  .rtable tr.total-row td{border-top:2px solid var(--border);font-weight:600;background:#0d0f1a}
+  .rtable tr.battle-ready td{border-bottom:2px solid var(--border)}
+  .rtable td.c-div,.rtable th.c-div{background:var(--border);padding:0}
+  .notebook{width:100%;margin-top:8px}
+  .notebook h3{font-size:.83rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);margin-bottom:8px}
+  .notebook-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  .notebook-cell label{display:block;font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;
+    color:var(--muted);margin-bottom:4px}
+  .notebook-cell textarea{width:100%;height:90px;resize:vertical;background:var(--panel);color:var(--text);
+    border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-family:inherit;font-size:.95rem}
+  .credits{font-size:.7rem;color:var(--muted);text-align:center;padding:4px 0}
+  .credits a{color:var(--muted)}
+  @media (max-width:900px){.page-layout{grid-template-columns:1fr}.players{grid-template-columns:1fr}
+    #sharedCardsBar{grid-template-columns:1fr}.notebook-grid{grid-template-columns:1fr}
+    .board-wrap{height:60vh}}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="header-text">
+    <h1><a href="/">Fendi's Snapshotbot</a></h1>
+    <div class="sub" id="headerSub">loading…</div>
+  </div>
+  <span class="livebadge" id="liveBadge">● live</span>
+</div>
+
+<div class="page-layout">
+<div class="army-panel">
+  <div class="army-label" id="armyLabelLeft">Red Army List</div>
+  <textarea id="note_army_red" placeholder="Army list…"></textarea>
+</div>
+<div class="center-col">
+<div id="sharedCardsBar"></div>
+<div class="viewer-wrap">
+<div class="board-wrap">
+  <canvas id="board"></canvas>
+  <div id="tooltip"></div>
+</div>
+<div class="toolbar">
+  <button class="btn" id="toolRuler">&#128207; Ruler</button>
+  <button class="btn" id="toolDoodle">&#9998; Doodle</button>
+  <button class="btn dred on" id="dRed">&#9632;</button>
+  <button class="btn dblue" id="dBlue">&#9632;</button>
+  <button class="btn" id="dUndo">&#8630;</button>
+  <button class="btn" id="dClear">&#10005;</button>
+  <div class="tool-sep"></div>
+  <button class="btn" id="toggleRanges">&#9711; 3&Prime; objective range</button>
+  <button class="btn" id="resetView">Reset view</button>
+  <div class="hint" id="hint">wheel = zoom &middot; drag = pan &middot; hover = unit name</div>
+</div>
+<div class="controls">
+  <button class="btn" id="prev">&#8592;</button>
+  <button class="btn" id="playBtn">&#9654;</button>
+  <button class="btn" id="next">&#8594;</button>
+  <input type="range" id="slider" min="0" max="0" value="0">
+  <span id="label"></span>
+  <span id="bookmarks"></span>
+</div>
+</div>
+<div id="dataPanel"></div>
+<div class="notebook">
+  <h3>Game Notebook <span style="color:var(--muted);font-weight:400;text-transform:none">— saves as you type, anyone with the link can edit</span></h3>
+  <div class="notebook-grid">
+    <div class="notebook-cell"><label>Deployment</label><textarea id="note_deployment"></textarea></div>
+    <div class="notebook-cell"><label>Round 1</label><textarea id="note_round1"></textarea></div>
+    <div class="notebook-cell"><label>Round 2</label><textarea id="note_round2"></textarea></div>
+    <div class="notebook-cell"><label>Round 3</label><textarea id="note_round3"></textarea></div>
+    <div class="notebook-cell"><label>Round 4</label><textarea id="note_round4"></textarea></div>
+    <div class="notebook-cell"><label>Round 5</label><textarea id="note_round5"></textarea></div>
+  </div>
+</div>
+<div class="credits">
+  board render: <a href="https://rapidingress.com" target="_blank">rapidingress.com</a> ·
+  mission rules: <a href="https://gdmissions.app/11th" target="_blank">gdmissions.app</a> ·
+  replays kept 30 days
+</div>
+</div>
+<div class="army-panel">
+  <div class="army-label" id="armyLabelRight">Blue Army List</div>
+  <textarea id="note_army_blue" placeholder="Army list…"></textarea>
+</div>
+</div>
+
+<script>
+const SLUG = {{ slug | tojson }};
+const LAYOUT_KEY = {{ layout_key | tojson }};
+const LAYOUT_META = {{ layout_meta_json | safe }};
+
+const MISSION_DECKS = {
+  "battlefield dominance":"take-and-hold","immovable object":"take-and-hold",
+  "determined acquisition":"take-and-hold","purge and secure":"take-and-hold",
+  "inescapable dominion":"take-and-hold",
+  "unstoppable force":"purge-the-foe","meatgrinder":"purge-the-foe","punishment":"purge-the-foe",
+  "consecrate":"purge-the-foe","destroyer's wrath":"purge-the-foe",
+  "death trap":"disruption","delaying action":"disruption","outmanoeuvre":"disruption",
+  "smoke and mirrors":"disruption","locate and deny":"disruption",
+  "reconnaissance sweep":"reconnaissance","triangulation":"reconnaissance",
+  "surveil the foe":"reconnaissance","gather intel":"reconnaissance","search and scour":"reconnaissance",
+  "secure asset":"priority-assets","vital link":"priority-assets","extract relic":"priority-assets",
+  "vanguard operation":"priority-assets","sabotage":"priority-assets",
+};
+
+let META = {}, FRAMES = [], NOTES = {}, ENDED = true, lastSnapId = 0;
+let cur = 0, tool = 'pan', showRanges = false, playing = false, playTimer = null;
+let cam = {scale: 1, ox: 0, oy: 0};
+let ruler = null, hoverModel = null, doodleColor = '#ff1a1a';
+let strokes = [];   // per-frame doodles, world coords (client-side only)
+
+const cv = document.getElementById('board'), ctx = cv.getContext('2d');
+const wrap = cv.parentElement, tip = document.getElementById('tooltip');
+const HX = 30, HZ = 22;
+
+const bgImg = new Image(); let bgReady = false;
+bgImg.onload = () => { bgReady = true; draw(); };
+if (LAYOUT_KEY) bgImg.src = '/static/layouts/' + LAYOUT_KEY + '.svg';
+
+function fitView(){
+  const r = wrap.getBoundingClientRect();
+  cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
+  const s = Math.min(cv.width / (2 * HX + 4), cv.height / (2 * HZ + 4));
+  cam = {scale: s, ox: cv.width / 2, oy: cv.height / 2};
+  draw();
+}
+function W2S(x, z){ return [cam.ox + x * cam.scale, cam.oy - z * cam.scale]; }
+function S2W(px, py){ return [(px - cam.ox) / cam.scale, (cam.oy - py) / cam.scale]; }
+function poly(p, close = true){
+  ctx.beginPath();
+  const [x0, y0] = W2S(p[0][0], p[0][1]); ctx.moveTo(x0, y0);
+  for (let i = 1; i < p.length; i++){ const [x, y] = W2S(p[i][0], p[i][1]); ctx.lineTo(x, y); }
+  if (close) ctx.closePath();
+}
+
+function modelBase(m){ return Array.isArray(m.b) ? m.b : (typeof m.b === 'number' ? m.b : 1.26); }
+
+function draw(){
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  poly([[-HX,-HZ],[HX,-HZ],[HX,HZ],[-HX,HZ]]);
+  ctx.fillStyle = '#14171d'; ctx.fill();
+  if (bgReady){
+    const [bx, by] = W2S(-HX, HZ);
+    ctx.drawImage(bgImg, bx, by, 2 * HX * cam.scale, 2 * HZ * cam.scale);
+  }
+  ctx.strokeStyle = '#2a3550'; ctx.lineWidth = 2;
+  poly([[-HX,-HZ],[HX,-HZ],[HX,HZ],[-HX,HZ]]); ctx.stroke();
+
+  if (showRanges){
+    for (const o of (LAYOUT_META.objectives || [])){
+      const [x, y] = W2S(o.x, o.z);
+      ctx.beginPath(); ctx.arc(x, y, (3 + 0.787) * cam.scale, 0, 7);
+      ctx.setLineDash([6, 5]); ctx.strokeStyle = 'rgba(240,192,64,.6)'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(x, y, (3 + 0.787) * cam.scale, 0, 7);
+      ctx.fillStyle = 'rgba(240,192,64,.06)'; ctx.fill();
+    }
+  }
+
+  const models = (FRAMES[cur] && FRAMES[cur].models) || [];
+  for (const m of models){
+    const [x, y] = W2S(m.x, m.z);
+    const isHover = hoverModel === m;
+    const team = m.t === 'red' ? 'red' : (m.t === 'blue' ? 'blue' : null);
+    const bodyOp = team === 'red' ? '#6e1a1a' : team === 'blue' ? '#142952' : '#3a3f4c';
+    const ring = team === 'red' ? '#e05555' : team === 'blue' ? '#5588e0' : '#9aa2b5';
+    const b = modelBase(m);
+    ctx.save();
+    if (Array.isArray(b)){
+      ctx.translate(x, y); ctx.rotate(-(m.r || 0) * Math.PI / 180);
+      ctx.beginPath(); ctx.ellipse(0, 0, b[0] / 2 * cam.scale, b[1] / 2 * cam.scale, 0, 0, 7);
+      ctx.fillStyle = bodyOp; ctx.fill();
+      ctx.lineWidth = isHover ? 3 : 2; ctx.strokeStyle = isHover ? '#fff' : ring; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(b[0] / 2 * cam.scale, 0);
+      ctx.strokeStyle = ring; ctx.lineWidth = 1.5; ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(x, y, b / 2 * cam.scale, 0, 7);
+      ctx.fillStyle = bodyOp; ctx.fill();
+      ctx.lineWidth = isHover ? 2.5 : 1.5; ctx.strokeStyle = isHover ? '#fff' : ring; ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  for (const st of (strokes[cur] || [])){
+    if (st.pts.length < 2) continue;
+    ctx.beginPath();
+    const [x0, y0] = W2S(st.pts[0][0], st.pts[0][1]); ctx.moveTo(x0, y0);
+    for (let i = 1; i < st.pts.length; i++){ const [x, y] = W2S(st.pts[i][0], st.pts[i][1]); ctx.lineTo(x, y); }
+    ctx.strokeStyle = st.color; ctx.lineWidth = 3; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.stroke();
+  }
+
+  if (ruler){
+    const [x1, y1] = W2S(ruler.x1, ruler.z1), [x2, y2] = W2S(ruler.x2, ruler.z2);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+    ctx.strokeStyle = '#f0c040'; ctx.lineWidth = 2; ctx.setLineDash([8, 5]); ctx.stroke(); ctx.setLineDash([]);
+    for (const [x, y] of [[x1, y1], [x2, y2]]){
+      ctx.beginPath(); ctx.arc(x, y, 4, 0, 7); ctx.fillStyle = '#f0c040'; ctx.fill();
+    }
+    let d = Math.hypot(ruler.x2 - ruler.x1, ruler.z2 - ruler.z1);
+    let lab = d.toFixed(1) + '″';
+    if (ruler.r1 != null || ruler.r2 != null){
+      const de = Math.max(0, d - (ruler.r1 || 0) - (ruler.r2 || 0));
+      lab = de.toFixed(1) + '″ edge-to-edge (' + d.toFixed(1) + '″ centres)';
+    }
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    ctx.font = (13 * devicePixelRatio) + 'px Segoe UI';
+    const w = ctx.measureText(lab).width;
+    ctx.fillStyle = '#000d'; ctx.fillRect(mx - w / 2 - 6, my - 26, w + 12, 20);
+    ctx.fillStyle = '#f0c040'; ctx.textAlign = 'center'; ctx.fillText(lab, mx, my - 10);
+  }
+}
+
+function hitModel(wx, wz){
+  const models = (FRAMES[cur] && FRAMES[cur].models) || [];
+  let best = null, bd = 1e9;
+  for (const m of models){
+    const b = modelBase(m);
+    const r = Array.isArray(b) ? Math.max(b[0], b[1]) / 2 : b / 2;
+    const d = Math.hypot(wx - m.x, wz - m.z);
+    if (d < r + 0.3 && d < bd){ bd = d; best = m; }
+  }
+  return best;
+}
+
+let dragging = false, lastPx = 0, lastPy = 0, rulerDown = false, doodling = false, curStroke = null;
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const k = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  const px = e.offsetX * devicePixelRatio, py = e.offsetY * devicePixelRatio;
+  cam.ox = px - (px - cam.ox) * k; cam.oy = py - (py - cam.oy) * k; cam.scale *= k;
+  draw();
+}, {passive: false});
+cv.addEventListener('mousedown', e => {
+  const px = e.offsetX * devicePixelRatio, py = e.offsetY * devicePixelRatio;
+  const [wx, wz] = S2W(px, py);
+  if (tool === 'pan'){ dragging = true; lastPx = px; lastPy = py; cv.style.cursor = 'grabbing'; }
+  else if (tool === 'ruler'){
+    const m = hitModel(wx, wz);
+    const b = m ? modelBase(m) : null;
+    const r1 = m ? (Array.isArray(b) ? Math.min(b[0], b[1]) / 2 : b / 2) : null;
+    ruler = {x1: m ? m.x : wx, z1: m ? m.z : wz, x2: wx, z2: wz, r1: r1, r2: null};
+    rulerDown = true; draw();
+  }
+  else if (tool === 'doodle'){
+    doodling = true; curStroke = {color: doodleColor, pts: [[wx, wz]]};
+    (strokes[cur] = strokes[cur] || []).push(curStroke);
+  }
+});
+cv.addEventListener('mousemove', e => {
+  const px = e.offsetX * devicePixelRatio, py = e.offsetY * devicePixelRatio;
+  const [wx, wz] = S2W(px, py);
+  if (dragging){ cam.ox += px - lastPx; cam.oy += py - lastPy; lastPx = px; lastPy = py; draw(); return; }
+  if (rulerDown && ruler){
+    const m = hitModel(wx, wz);
+    const b = m ? modelBase(m) : null;
+    ruler.x2 = m ? m.x : wx; ruler.z2 = m ? m.z : wz;
+    ruler.r2 = m ? (Array.isArray(b) ? Math.min(b[0], b[1]) / 2 : b / 2) : null;
+    draw(); return;
+  }
+  if (doodling && curStroke){ curStroke.pts.push([wx, wz]); draw(); return; }
+  const m = hitModel(wx, wz);
+  if (m !== hoverModel){ hoverModel = m; draw(); }
+  if (m){
+    tip.style.display = 'block';
+    tip.style.left = (e.offsetX + 14) + 'px'; tip.style.top = (e.offsetY + 8) + 'px';
+    const b = modelBase(m);
+    const bl = Array.isArray(b) ? (b[0] + '″ × ' + b[1] + '″') : (b + '″ base');
+    const col = m.t === 'red' ? '#e05555' : m.t === 'blue' ? '#5588e0' : '#9aa2b5';
+    tip.innerHTML = '<b style="color:' + col + '">' + (m.n || 'model') + '</b><br><span style="color:#5a6080">' + bl + '</span>';
+  } else tip.style.display = 'none';
+});
+cv.addEventListener('mouseup', () => { dragging = false; rulerDown = false; doodling = false; curStroke = null; if (tool === 'pan') cv.style.cursor = 'grab'; });
+cv.addEventListener('mouseleave', () => { dragging = false; rulerDown = false; doodling = false; curStroke = null; tip.style.display = 'none'; });
+
+function setTool(t){
+  tool = (tool === t) ? 'pan' : t;
+  for (const [id, name] of [['toolRuler', 'ruler'], ['toolDoodle', 'doodle']])
+    document.getElementById(id).classList.toggle('active', name === tool);
+  cv.className = tool === 'pan' ? '' : tool;
+  const hints = {pan: 'wheel = zoom · drag = pan · hover = unit name',
+                 ruler: 'drag between models — snaps to bases, edge-to-edge inches · click Ruler again to exit',
+                 doodle: 'draw on the board — strokes stick to this frame · click Doodle again to exit'};
+  document.getElementById('hint').textContent = hints[tool];
+  if (tool !== 'ruler') ruler = null;
+  draw();
+}
+document.getElementById('toolRuler').onclick = () => setTool('ruler');
+document.getElementById('toolDoodle').onclick = () => setTool('doodle');
+document.getElementById('dRed').onclick = function(){ doodleColor = '#ff1a1a'; this.classList.add('on'); document.getElementById('dBlue').classList.remove('on'); };
+document.getElementById('dBlue').onclick = function(){ doodleColor = '#1a8fff'; this.classList.add('on'); document.getElementById('dRed').classList.remove('on'); };
+document.getElementById('dUndo').onclick = () => { (strokes[cur] || []).pop(); draw(); };
+document.getElementById('dClear').onclick = () => { strokes[cur] = []; draw(); };
+document.getElementById('toggleRanges').onclick = function(){ showRanges = !showRanges; this.classList.toggle('active', showRanges); draw(); };
+document.getElementById('resetView').onclick = fitView;
+
+/* ---------- score panel ---------- */
+const panel = document.getElementById('dataPanel'), sharedBar = document.getElementById('sharedCardsBar');
+function pill(name, tag){
+  if (!name) return '<div class="card-pill empty">— none —</div>';
+  return `<div class="card-pill">${esc(name)}${tag ? `<span class="pill-tag">${tag}</span>` : ''}</div>`;
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function missionPill(name){
+  if (!name) return '<div class="card-pill empty">— none —</div>';
+  const base = String(name).replace(/\s+\d+$/, '').toLowerCase();
+  const deck = MISSION_DECKS[base];
+  if (!deck) return pill(name);
+  const slug = base.replace(/'/g, '').replace(/\s+/g, '-');
+  return `<a class="card-pill pill-link" href="https://gdmissions.app/11th/primary-missions/${deck}/${slug}" target="_blank">${esc(name)}<span class="pill-tag">rules ↗</span></a>`;
+}
+function block(cls, name, scores, primaries, secondaries, fixed){
+  const s = scores || {};
+  return `<div class="player-block ${cls}">
+    <div class="player-name">&#9632; ${esc(name)}</div>
+    <div class="player-label">Primary Mission — from disposition</div>
+    ${(primaries && primaries.length ? primaries.map(missionPill).join('') : missionPill(null))}
+    <div class="player-label">Secondaries — active</div>
+    ${(secondaries && secondaries.length ? secondaries.map(n => pill(n, fixed ? 'fixed' : 'tactical')).join('') : pill(null))}
+    <div class="player-total">${s.total != null ? s.total : '—'}</div>
+    <div class="total-label">Total VP</div></div>`;
+}
+function renderPanel(){
+  const f = FRAMES[cur] || {};
+  const sc = f.scores || {}, cd = f.cards || {};
+  const p1 = sc.red || {}, p2 = sc.blue || {};
+  const redName = META.red_player || 'Red', blueName = META.blue_player || 'Blue';
+  const disp = (META.red_disposition && META.blue_disposition)
+    ? `${META.red_disposition}  vs  ${META.blue_disposition}` : null;
+  sharedBar.innerHTML = `
+   <div class="shared-card"><div class="player-label">Layout</div>${pill(META.map || LAYOUT_KEY)}
+     ${LAYOUT_META.label ? `<div class="atk-def">${esc(LAYOUT_META.label)}${LAYOUT_KEY ? ' · ' + LAYOUT_KEY : ''}</div>` : ''}</div>
+   <div class="shared-card"><div class="player-label">Dispositions</div>${pill(disp)}</div>
+   <div class="shared-card"><div class="player-label">Twist</div>${pill((cd.twist || [])[0])}</div>`;
+
+  let rows = `<tr class="battle-ready">
+    <td class="c-name-p1">Battle Ready</td><td class="tot p1">10</td><td>&mdash;</td><td>&mdash;</td>
+    <td class="c-div"></td><td class="c-rnd">Battle Ready</td><td class="c-div"></td>
+    <td>&mdash;</td><td>&mdash;</td><td class="tot p2">10</td><td class="c-name-p2">Battle Ready</td></tr>`;
+  for (let r = 0; r < 5; r++){
+    const r1 = (p1.rounds || [])[r] || {}, r2 = (p2.rounds || [])[r] || {};
+    const has = (r1.total || 0) + (r2.total || 0) > 0;
+    rows += `<tr class="${has ? '' : 'dim'}">
+      <td class="c-name-p1">Round ${r + 1}</td>
+      <td class="tot p1">${r1.total || 0}</td><td>${r1.primary || 0}</td><td>${r1.secondary || 0}</td>
+      <td class="c-div"></td><td class="c-rnd">Round ${r + 1}</td><td class="c-div"></td>
+      <td>${r2.secondary || 0}</td><td>${r2.primary || 0}</td><td class="tot p2">${r2.total || 0}</td>
+      <td class="c-name-p2">Round ${r + 1}</td></tr>`;
+  }
+  const eobHas = (p1.endOfBattle || 0) + (p2.endOfBattle || 0) > 0;
+  rows += `<tr class="${eobHas ? '' : 'dim'}">
+    <td class="c-name-p1">End of Battle</td>
+    <td class="tot p1">${p1.endOfBattle || 0}</td><td>&mdash;</td><td>&mdash;</td>
+    <td class="c-div"></td><td class="c-rnd">End of Battle</td><td class="c-div"></td>
+    <td>&mdash;</td><td>&mdash;</td><td class="tot p2">${p2.endOfBattle || 0}</td>
+    <td class="c-name-p2">End of Battle</td></tr>`;
+  rows += `<tr class="total-row">
+    <td class="c-name-p1">Totals</td>
+    <td class="tot p1">${p1.total || 0}</td><td>${p1.primary || 0} / 45</td><td>${p1.secondary || 0} / 45</td>
+    <td class="c-div"></td><td class="c-rnd">Totals</td><td class="c-div"></td>
+    <td>${p2.secondary || 0} / 45</td><td>${p2.primary || 0} / 45</td><td class="tot p2">${p2.total || 0}</td>
+    <td class="c-name-p2">Totals</td></tr>`;
+
+  panel.innerHTML = `<div class="players">
+    ${block('p1', redName, p1, cd.red_primary, cd.red_secondary, p1.fixed)}
+    ${block('p2', blueName, p2, cd.blue_primary, cd.blue_secondary, p2.fixed)}
+  </div>
+  <div class="round-table-wrap"><h3>Round by Round — 11th Edition (Primary max 45 · Secondary max 45 · Battle Ready +10 · cap 100)</h3>
+  <table class="rtable">
+    <colgroup><col class="c-name"><col class="c-num"><col class="c-num"><col class="c-num">
+    <col class="c-div"><col class="c-rnd"><col class="c-div">
+    <col class="c-num"><col class="c-num"><col class="c-num"><col class="c-name"></colgroup>
+    <thead><tr>
+      <th class="c-name-p1">&#9632; ${esc(redName)}</th><th class="p1h">TOT</th><th class="p1h">PRI</th><th class="p1h">SEC</th>
+      <th class="c-div"></th><th></th><th class="c-div"></th>
+      <th class="p2h">SEC</th><th class="p2h">PRI</th><th class="p2h">TOT</th>
+      <th class="c-name-p2">${esc(blueName)} &#9632;</th>
+    </tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
+/* ---------- frames / timeline ---------- */
+const slider = document.getElementById('slider'), labelEl = document.getElementById('label'),
+      playBtn = document.getElementById('playBtn');
+function frameLabel(f){
+  if (!f) return '';
+  const t = new Date(f.taken_at);
+  const hm = t.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+  return `R${f.round} · ${hm}`;
+}
+function renderBookmarks(){
+  const el = document.getElementById('bookmarks');
+  el.innerHTML = '';
+  FRAMES.forEach((f, i) => {
+    if (f.mark){
+      const b = document.createElement('span');
+      b.className = 'bookmark'; b.textContent = '\u{1F4CD} ' + f.mark;
+      b.onclick = () => { setPlaying(false); show(i); };
+      el.appendChild(b);
+    }
+  });
+}
+function show(n){
+  cur = Math.max(0, Math.min(FRAMES.length - 1, n));
+  slider.max = Math.max(0, FRAMES.length - 1);
+  slider.value = cur;
+  labelEl.textContent = FRAMES.length ? `${frameLabel(FRAMES[cur])} (${cur + 1}/${FRAMES.length})` : 'no snapshots yet';
+  ruler = null;
+  renderPanel(); draw();
+}
+function setPlaying(on){
+  playing = on; playBtn.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
+  if (playing){ playTimer = setInterval(() => show(cur >= FRAMES.length - 1 ? 0 : cur + 1), 1400); }
+  else { clearInterval(playTimer); }
+}
+playBtn.onclick = () => setPlaying(!playing);
+document.getElementById('prev').onclick = () => { setPlaying(false); show(cur - 1); };
+document.getElementById('next').onclick = () => { setPlaying(false); show(cur + 1); };
+slider.oninput = () => { setPlaying(false); show(+slider.value); };
+document.addEventListener('keydown', e => {
+  if (document.activeElement && ['TEXTAREA', 'INPUT'].includes(document.activeElement.tagName)) return;
+  if (e.key === 'ArrowLeft'){ setPlaying(false); show(cur - 1); }
+  if (e.key === 'ArrowRight'){ setPlaying(false); show(cur + 1); }
+  if (e.key === ' '){ e.preventDefault(); setPlaying(!playing); }
+});
+
+/* ---------- notebook ---------- */
+const NOTE_KEYS = ['deployment', 'round1', 'round2', 'round3', 'round4', 'round5', 'army_red', 'army_blue'];
+const noteTimers = {};
+function wireNotes(){
+  for (const k of NOTE_KEYS){
+    const ta = document.getElementById('note_' + k);
+    if (!ta) continue;
+    ta.value = NOTES[k] || '';
+    ta.addEventListener('input', () => {
+      clearTimeout(noteTimers[k]);
+      noteTimers[k] = setTimeout(() => {
+        fetch('/api/notes', {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({slug: SLUG, cell_key: k, body: ta.value})});
+      }, 800);
+    });
+  }
+}
+
+/* ---------- data load + live polling ---------- */
+function ingest(sess, first){
+  META = sess.mission_meta || {};
+  ENDED = sess.ended_at != null;
+  const wasAtEnd = cur >= FRAMES.length - 1;
+  for (const s of sess.snapshots){
+    FRAMES.push(s); strokes.push([]);
+    lastSnapId = s.id;
+  }
+  if (first){
+    NOTES = sess.notes || {};
+    wireNotes();
+    document.getElementById('headerSub').textContent =
+      `${META.red_player || 'Red'} vs ${META.blue_player || 'Blue'} — ${META.map || 'LCT game'}`;
+    document.getElementById('armyLabelLeft').textContent = (META.red_player || 'Red') + ' Army List';
+    document.getElementById('armyLabelRight').textContent = (META.blue_player || 'Blue') + ' Army List';
+    show(FRAMES.length - 1);
+  } else if (sess.snapshots.length){
+    renderBookmarks();
+    if (wasAtEnd && !playing) show(FRAMES.length - 1); else show(cur);
+  }
+  renderBookmarks();
+  document.getElementById('liveBadge').classList.toggle('on', !ENDED);
+  if (!ENDED) setTimeout(pollLive, 15000);
+}
+function pollLive(){
+  fetch(`/api/session/${SLUG}/data?after=${lastSnapId}`)
+    .then(r => r.json())
+    .then(d => { if (d.ok) ingest(d.session, false); })
+    .catch(() => setTimeout(pollLive, 30000));
+}
+fetch(`/api/session/${SLUG}/data`)
+  .then(r => r.json())
+  .then(d => { if (d.ok) ingest(d.session, true); });
+
+new ResizeObserver(fitView).observe(wrap);
+fitView();
+</script>
+</body>
+</html>
