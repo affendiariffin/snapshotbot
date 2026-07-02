@@ -5,7 +5,7 @@ import os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.expanduser(
-    "~/Documents/My Games/Tabletop Simulator/Saves/Saved Objects/Snapshotbot.json"
+    "~/Documents/My Games/Tabletop Simulator/Saves/Saved Objects/tools/Snapshotbot.json"
 )
 
 with open(os.path.join(HERE, "snapshotbot.lua"), encoding="utf-8") as f:
@@ -57,6 +57,7 @@ token = {
     ],
 }
 
+os.makedirs(os.path.dirname(OUT), exist_ok=True)
 with open(OUT, "w", encoding="utf-8") as f:
     json.dump(token, f, indent=2, ensure_ascii=False)
 print("written", OUT)

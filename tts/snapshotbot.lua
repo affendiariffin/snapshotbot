@@ -235,16 +235,6 @@ function clickLink()
     log("replay: " .. SERVER_URL .. sessionPath, TEAL)
 end
 
-function clickEnd()
-    if sessionSlug == nil then return end
-    postJson("/api/session/stop", {slug = sessionSlug}, function()
-        log("session ended — replay: " .. SERVER_URL .. tostring(sessionPath), TEAL)
-        sessionSlug = nil
-        sessionPath = nil
-        lastSig = nil
-    end)
-end
-
 ---------------------------------------------------------------------------
 -- Lifecycle
 ---------------------------------------------------------------------------
@@ -260,23 +250,19 @@ function onLoad(saved)
             sessionPath = st.path
         end
     end
+    -- No Start/Stop/End by design: recording begins when an LCT table is detected and
+    -- the session seals itself server-side after ~10 minutes of silence (players left).
     self.createButton({
         label = "📍 Mark", click_function = "clickMark", function_owner = self,
-        position = {-0.85, 0.15, 0}, width = 620, height = 260, font_size = 120,
+        position = {-0.45, 0.15, 0}, width = 620, height = 260, font_size = 120,
         color = {0.11, 0.13, 0.19}, font_color = {0.94, 0.75, 0.25},
         tooltip = "Bookmark this moment on the replay timeline",
     })
     self.createButton({
         label = "🔗 Link", click_function = "clickLink", function_owner = self,
-        position = {0, 0.15, 0}, width = 620, height = 260, font_size = 120,
+        position = {0.45, 0.15, 0}, width = 620, height = 260, font_size = 120,
         color = {0.11, 0.13, 0.19}, font_color = {0.33, 0.53, 0.88},
         tooltip = "Broadcast the replay URL in chat",
-    })
-    self.createButton({
-        label = "⏹ End", click_function = "clickEnd", function_owner = self,
-        position = {0.85, 0.15, 0}, width = 620, height = 260, font_size = 120,
-        color = {0.11, 0.13, 0.19}, font_color = {0.6, 0.6, 0.6},
-        tooltip = "End the session (recording stops)",
     })
     Wait.time(onPollTick, POLL_SECONDS, -1)
     if sessionSlug ~= nil then

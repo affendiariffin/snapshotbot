@@ -7,6 +7,9 @@ from psycopg.types.json import Jsonb
 
 # Retention window for sessions and everything under them (Fendi: 30 days, no archive).
 RETENTION_DAYS = 30
+# Sessions end by abandonment: the token heartbeats every 60s while TTS is open, so
+# this much silence means everyone left the game (no End button by design).
+STALE_MINUTES = 10
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sb_sessions (
@@ -55,6 +58,7 @@ def init_db():
     with get_conn() as conn:
         conn.execute(SCHEMA)
     expire_old_sessions()
+    finalize_stale_sessions()
 
 
 def expire_old_sessions():
@@ -103,13 +107,23 @@ def add_snapshot(slug, round_, mark, scores, cards, models):
         return row["id"]
 
 
-def end_session(slug):
+def finalize_stale_sessions():
+    # Seal open sessions whose last activity is older than the stale window; ended_at
+    # becomes the last snapshot time (or started_at for empty sessions).
     with get_conn() as conn:
         cur = conn.execute(
-            "UPDATE sb_sessions SET ended_at = now() WHERE slug = %s AND ended_at IS NULL",
-            (slug,),
+            """
+            UPDATE sb_sessions s SET ended_at = COALESCE(
+                (SELECT max(taken_at) FROM sb_snapshots WHERE session_id = s.id),
+                s.started_at)
+            WHERE s.ended_at IS NULL
+              AND COALESCE(
+                (SELECT max(taken_at) FROM sb_snapshots WHERE session_id = s.id),
+                s.started_at) < now() - make_interval(mins => %s)
+            """,
+            (STALE_MINUTES,),
         )
-        return cur.rowcount > 0
+        return cur.rowcount
 
 
 def get_session_bundle(slug, after_id=0):

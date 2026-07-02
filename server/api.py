@@ -9,7 +9,7 @@ api = Blueprint("api", __name__)
 # Per-IP sliding-window rate limits (teams-pairing pattern). No auth by design:
 # unguessable slugs gate reads, these gate writes, 30-day TTL cleans up the rest.
 _BUCKETS = {}
-_LIMITS = {"start": 5, "snapshot": 90, "stop": 10, "notes": 30}
+_LIMITS = {"start": 5, "snapshot": 90, "notes": 30}
 
 NOTE_KEYS = {"deployment", "round1", "round2", "round3", "round4", "round5",
              "army_red", "army_blue"}
@@ -40,6 +40,7 @@ def session_start():
     if not isinstance(meta, dict):
         return _bad("mission_meta must be an object")
     db.expire_old_sessions()
+    db.finalize_stale_sessions()
     slug = db.create_session(meta)
     return jsonify({"ok": True, "slug": slug, "path": "/r/" + slug})
 
@@ -71,6 +72,9 @@ def snapshot():
 
 @api.get("/api/session/<slug>/data")
 def session_data(slug):
+    # Live viewers poll this; finalizing here drops the LIVE badge ~10 min after
+    # the last player leaves TTS, without waiting for the next session create.
+    db.finalize_stale_sessions()
     after_id = request.args.get("after", 0, type=int)
     bundle = db.get_session_bundle(slug, after_id)
     if bundle is None:
@@ -94,11 +98,4 @@ def save_note():
     return jsonify({"ok": True})
 
 
-@api.post("/api/session/stop")
-def session_stop():
-    if _rate_limited("stop"):
-        return _bad("rate limited", 429)
-    body = request.get_json(force=True, silent=True) or {}
-    if not db.end_session(body.get("slug") or ""):
-        return _bad("unknown session", 404)
-    return jsonify({"ok": True})
+
