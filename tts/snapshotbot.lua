@@ -5,7 +5,7 @@
      All cross-object reads happen inside Wait.time callbacks wrapped in pcall
      (never onUpdate — TTS crashes on cross-object access there). --]]
 
-SERVER_URL = "https://REPLACE-AFTER-DEPLOY.up.railway.app"
+SERVER_URL = "https://snapshotbot-production.up.railway.app"
 POLL_SECONDS = 15      -- state check cadence
 FORCE_POST_SECONDS = 60 -- post at least this often while a session runs
 
