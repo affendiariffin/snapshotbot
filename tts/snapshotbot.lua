@@ -252,15 +252,16 @@ function onLoad(saved)
     end
     -- No Start/Stop/End by design: recording begins when an LCT table is detected and
     -- the session seals itself server-side after ~90s of silence (players left TTS).
+    -- Sized for the PiecePack_Arms vessel (Shinebot's single button: 900x280 @ {0,0.1,0}).
     self.createButton({
         label = "📍 Mark", click_function = "clickMark", function_owner = self,
-        position = {-0.45, 0.15, 0}, width = 620, height = 260, font_size = 120,
+        position = {-0.24, 0.15, 0}, width = 430, height = 260, font_size = 95,
         color = {0.11, 0.13, 0.19}, font_color = {0.94, 0.75, 0.25},
         tooltip = "Bookmark this moment on the replay timeline",
     })
     self.createButton({
         label = "🔗 Link", click_function = "clickLink", function_owner = self,
-        position = {0.45, 0.15, 0}, width = 620, height = 260, font_size = 120,
+        position = {0.24, 0.15, 0}, width = 430, height = 260, font_size = 95,
         color = {0.11, 0.13, 0.19}, font_color = {0.33, 0.53, 0.88},
         tooltip = "Broadcast the replay URL in chat",
     })
