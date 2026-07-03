@@ -231,8 +231,24 @@ function guideBase(name){
     const e = BASE_KEYS.find(([k]) => k.length >= 5 && key.includes(k));
     mm = e ? e[1] : null;
   }
+  if (mm == null && key.length >= 5){
+    // nickname is a prefix of a guide name ("Retributor" → "Retributor Squad");
+    // BASE_KEYS is longest-first, so the last hit is the shortest (closest) key.
+    for (const [k, v] of BASE_KEYS) if (k.startsWith(key + ' ')) mm = v;
+  }
   return baseMemo[key] = mm == null ? null :
     {mm: mm, in: Array.isArray(mm) ? [mm[0] / 25.4, mm[1] / 25.4] : mm / 25.4};
+}
+// Guide misses inherit from yellowscribe squadmates: models share a unit id (m.u),
+// so a "Paragon Superior" takes the 50mm its "Paragon Warsuit" sisters resolved to.
+function resolveModels(fr){
+  if (!fr || fr._resolvedWith === BASE_KEYS.length) return;
+  fr._resolvedWith = BASE_KEYS.length;
+  const unit = {};
+  for (const m of fr.models || []){
+    if (m.u && !unit[m.u]){ const g = guideBase(m.n); if (g) unit[m.u] = g; }
+  }
+  for (const m of fr.models || []) m._g = guideBase(m.n) || (m.u && unit[m.u]) || null;
 }
 
 function fitView(){
@@ -252,12 +268,12 @@ function poly(p, close = true){
 }
 
 function modelBase(m){
-  const g = guideBase(m.n);
-  if (g) return g.in;
+  if (m._g) return m._g.in;
   return Array.isArray(m.b) ? m.b : (typeof m.b === 'number' ? m.b : 1.26);
 }
 
 function draw(){
+  resolveModels(FRAMES[cur]);
   ctx.clearRect(0, 0, cv.width, cv.height);
   poly([[-HX,-HZ],[HX,-HZ],[HX,HZ],[-HX,HZ]]);
   ctx.fillStyle = '#14171d'; ctx.fill();
@@ -322,6 +338,7 @@ function draw(){
 }
 
 function hitModel(wx, wz){
+  resolveModels(FRAMES[cur]);
   const models = (FRAMES[cur] && FRAMES[cur].models) || [];
   let best = null, bd = 1e9;
   for (const m of models){
@@ -365,11 +382,12 @@ cv.addEventListener('mousemove', e => {
   if (m){
     tip.style.display = 'block';
     tip.style.left = (e.offsetX + 14) + 'px'; tip.style.top = (e.offsetY + 8) + 'px';
-    const g = guideBase(m.n), b = modelBase(m);
-    const bl = g
+    const g = m._g, b = modelBase(m);
+    let bl = g
       ? (Array.isArray(g.mm) ? g.mm[0] + '×' + g.mm[1] + 'mm base' : g.mm + 'mm base')
       : (Array.isArray(b) ? (b[0].toFixed(1) + '″ × ' + b[1].toFixed(1) + '″ footprint')
                           : (b.toFixed(1) + '″ base'));
+    if (m.w) bl += ' · ' + m.w + ' W';
     const col = m.t === 'red' ? '#e05555' : m.t === 'blue' ? '#5588e0' : '#9aa2b5';
     tip.innerHTML = '<b style="color:' + col + '">' + (m.n || 'model') + '</b><br><span style="color:#5a6080">' + bl + '</span>';
   } else tip.style.display = 'none';

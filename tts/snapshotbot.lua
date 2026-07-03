@@ -221,9 +221,28 @@ function round(v, digits)
     return math.floor(v * m + 0.5) / m
 end
 
--- Viewer contract per model: {n=name, x, z (inches), r=rotY, b=[w,h] bounds oval
--- (inches — the viewer's Base Size Guide name lookup beats this; b is the Hull/
--- unknown fallback), t=team}.
+-- Yellowscribe nicknames look like "[00ff16]8/8[-] Morvenn Vahl": BBCode colour
+-- wrapper + live wound counter + real name. Returns clean name, wounds ("8/8" or nil).
+function cleanName(raw)
+    local n = string.gsub(string.gsub(raw or "", "%[%x%x%x%x%x%x%]", ""), "%[%-%]", "")
+    local wounds = string.match(n, "^%s*(%d+/%d+)%s")
+    if wounds then n = string.gsub(n, "^%s*%d+/%d+%s+", "") end
+    n = string.gsub(string.gsub(n, "^%s+", ""), "%s+$", "")
+    return n, wounds
+end
+
+-- Yellowscribe tags every model of a unit "uuid:xxxxxxxx" — the unit handle.
+function unitId(obj)
+    for _, t in ipairs(obj.getTags() or {}) do
+        local u = string.match(t, "^uuid:(%x+)$")
+        if u then return u end
+    end
+    return nil
+end
+
+-- Viewer contract per model: {n=clean name, x, z (inches), r=rotY, b=[w,h] bounds
+-- oval (inches — the viewer's Base Size Guide name lookup beats this; b is the
+-- Hull/unknown fallback), t=team, w=wounds "cur/max", u=yellowscribe unit id}.
 function readModels()
     local models = {}
     local redSign = redHalfSign()
@@ -232,12 +251,15 @@ function readModels()
             local p = obj.getPosition()
             if math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z then
                 local b = obj.getBoundsNormalized().size
+                local name, wounds = cleanName(obj.getName())
                 table.insert(models, {
-                    n = obj.getName(),
+                    n = name,
                     x = round(p.x, 2), z = round(p.z, 2),
                     r = round(obj.getRotation().y, 1),
                     b = {round(b.x, 1), round(b.z, 1)},
                     t = modelTeam(obj, p.z, redSign),
+                    w = wounds,
+                    u = unitId(obj),
                 })
             end
         end
@@ -374,17 +396,30 @@ function clickLink()
 end
 
 -- Box-select models, then click Tag Red / Tag Blue. Writes GMNotes — the mod's own
--- team convention — so the assignment survives save/load and beats the half-table guess.
+-- team convention — so the assignment survives save/load and beats the half-table
+-- guess. Tagging any model of a yellowscribe unit (uuid: tag) tags the whole unit.
 function tagSelected(playerColor, team)
     local p = Player[playerColor]
     if p == nil then return end
-    local count = 0
+    local picked, units = {}, {}
     for _, obj in ipairs(p.getSelectedObjects() or {}) do
         if not obj.getLock() and isModelType(obj.name) then
-            obj.setGMNotes(team)
-            teamByGuid[obj.getGUID()] = string.lower(team)
-            count = count + 1
+            picked[obj.getGUID()] = obj
+            local u = unitId(obj)
+            if u then units[u] = true end
         end
+    end
+    if next(units) ~= nil then
+        for _, obj in ipairs(getAllObjects()) do
+            local u = isModelType(obj.name) and unitId(obj)
+            if u and units[u] then picked[obj.getGUID()] = obj end
+        end
+    end
+    local count = 0
+    for _, obj in pairs(picked) do
+        obj.setGMNotes(team)
+        teamByGuid[obj.getGUID()] = string.lower(team)
+        count = count + 1
     end
     if count == 0 then
         log("box-select your models first, then click Tag " .. team, RED)
