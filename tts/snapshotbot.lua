@@ -6,8 +6,8 @@
      (never onUpdate — TTS crashes on cross-object access there). --]]
 
 SERVER_URL = "https://snapshotbot-production.up.railway.app"
-POLL_SECONDS = 15      -- state check cadence
-FORCE_POST_SECONDS = 60 -- post at least this often while a session runs
+POLL_SECONDS = 5        -- state check cadence; posts only on actual change
+FORCE_POST_SECONDS = 60 -- heartbeat: post at least this often while a session runs
 
 -- LCT object GUIDs (verified against workshop 3710681747, 2026-07-03).
 -- Every lookup falls back to nickname search if a GUID dies in a mod update.
@@ -271,8 +271,12 @@ end
 -- oval (inches — measured base/guide lookup in the viewer beats this; b is the
 -- last-resort fallback), t=team, w=wounds "cur/max", u=yellowscribe unit id,
 -- g=mesh key, s=instance scale when not 1}.
+-- Second return: a movement signature (GUID:pos:rot per model, sorted so object
+-- iteration order can't flap it) — any actual move triggers a snapshot within one
+-- 5s poll instead of waiting for the 60s heartbeat.
 function readModels()
     local models = {}
+    local sigParts = {}
     local redSign = redHalfSign()
     for _, obj in ipairs(getAllObjects()) do
         if obj ~= self and not obj.getLock() and isModelType(obj.name) and not isExcluded(obj) then
@@ -286,10 +290,12 @@ function readModels()
                     sentGeom[gk] = true
                     table.insert(geomQueue, obj.getGUID())
                 end
+                local rot = obj.getRotation().y
+                table.insert(sigParts, string.format("%s:%.1f:%.1f:%.0f", obj.getGUID(), p.x, p.z, rot))
                 table.insert(models, {
                     n = name,
                     x = round(p.x, 2), z = round(p.z, 2),
-                    r = round(obj.getRotation().y, 1),
+                    r = round(rot, 1),
                     b = {round(b.x, 1), round(b.z, 1)},
                     t = modelTeam(obj, p.z, redSign),
                     w = wounds,
@@ -300,15 +306,17 @@ function readModels()
             end
         end
     end
-    return models
+    table.sort(sigParts)
+    return models, table.concat(sigParts, "|")
 end
 
 -- One-time geometry post per unique sculpt: ship the mesh URLs + child transform to
--- the server, which downloads and measures OFF the table. Max 3 per poll tick so a
--- 100-model deployment never bunches WebRequests.
+-- the server, which downloads and measures OFF the table. Max 2 per 5s poll tick
+-- (24/min, under the server's 30/min geom rate limit) so a 100-model deployment
+-- never bunches WebRequests.
 function pumpGeomQueue()
     local n = 0
-    while #geomQueue > 0 and n < 3 do
+    while #geomQueue > 0 and n < 2 do
         local obj = getObjectFromGUID(table.remove(geomQueue, 1))
         if obj ~= nil and not obj.isDestroyed() then
             local ok, dat = pcall(function() return obj.getData() end)
@@ -385,7 +393,7 @@ function tryStartSession()
     end)
 end
 
-function doSnapshot(markLabel)
+function doSnapshot(markLabel, models)
     if sessionSlug == nil then return end
     local ok, body = pcall(function()
         return {
@@ -394,7 +402,7 @@ function doSnapshot(markLabel)
             mark = markLabel,
             scores = readScores() or {},
             cards = readCards(),
-            models = readModels(),
+            models = models or (readModels()),
         }
     end)
     if not ok then
@@ -419,11 +427,12 @@ function doSnapshot(markLabel)
     end)
 end
 
-function computeSig()
+function computeSig(modelsSig)
     local sheet = findObj(SCORESHEET)
     local sheetState = (sheet and sheet.script_state) or ""
-    return string.format("%s|%d|%d|%d", sheetState,
-        readCounter(ROUND_COUNTER), readCounter(TURN_COUNTERS.red), readCounter(TURN_COUNTERS.blue))
+    return string.format("%s|%d|%d|%d|%s", sheetState,
+        readCounter(ROUND_COUNTER), readCounter(TURN_COUNTERS.red), readCounter(TURN_COUNTERS.blue),
+        modelsSig or "")
 end
 
 function onPollTick()
@@ -432,11 +441,13 @@ function onPollTick()
         tryStartSession()
         return
     end
-    local ok, sig = pcall(computeSig)
+    local ok, models, msig = pcall(readModels)
     if not ok then return end
+    local ok2, sig = pcall(computeSig, msig)
+    if not ok2 then return end
     if sig ~= lastSig or (os.time() - lastPostAt) >= FORCE_POST_SECONDS then
         lastSig = sig
-        doSnapshot(nil)
+        doSnapshot(nil, models)
     end
     pcall(pumpGeomQueue)
 end

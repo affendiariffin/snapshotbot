@@ -647,7 +647,7 @@ function ingest(sess, first){
   renderBookmarks();
   requestGeom();
   document.getElementById('liveBadge').classList.toggle('on', !ENDED);
-  if (!ENDED) setTimeout(pollLive, 15000);
+  if (!ENDED) setTimeout(pollLive, 5000);
 }
 function pollLive(){
   fetch(`/api/session/${SLUG}/data?after=${lastSnapId}`)
