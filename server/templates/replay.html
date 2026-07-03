@@ -18,14 +18,15 @@
   .livebadge{background:#0e2a18;border:1px solid #1e5a34;color:#2dce6a;border-radius:12px;
     padding:4px 12px;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;display:none}
   .livebadge.on{display:inline-block}
-  .page-layout{display:grid;grid-template-columns:1fr 70vw 1fr;width:100%;gap:12px;align-items:stretch}
+  .page-layout{display:grid;grid-template-columns:minmax(0,84vw);justify-content:center;width:100%;gap:12px}
   .center-col{display:flex;flex-direction:column;gap:14px}
+  .army-lists{display:grid;grid-template-columns:1fr 1fr;gap:10px;width:100%}
   .army-panel{display:flex;flex-direction:column;gap:6px;padding-top:4px}
   .army-label{font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
-  .army-panel textarea{flex:1;width:100%;min-height:100px;resize:none;background:var(--panel);
+  .army-panel textarea{flex:1;width:100%;min-height:180px;resize:vertical;background:var(--panel);
     color:var(--text);border:1px solid var(--border);border-radius:4px;padding:6px 8px;
     font-family:inherit;font-size:.95rem;line-height:1.4}
-  #sharedCardsBar{width:100%;display:grid;grid-template-columns:1.2fr 1fr .8fr;gap:10px}
+  #sharedCardsBar{width:100%;display:grid;grid-template-columns:1.2fr 1fr;gap:10px}
   .shared-card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:10px 12px}
   .atk-def{font-size:.78rem;color:var(--muted);margin-top:2px}
   .viewer-wrap{display:flex;flex-direction:column;align-items:center;width:100%;gap:0}
@@ -117,10 +118,6 @@
 </div>
 
 <div class="page-layout">
-<div class="army-panel">
-  <div class="army-label" id="armyLabelLeft">Red Army List</div>
-  <textarea id="note_army_red" placeholder="Army list…"></textarea>
-</div>
 <div class="center-col">
 <div id="sharedCardsBar"></div>
 <div class="viewer-wrap">
@@ -159,15 +156,21 @@
     <div class="notebook-cell"><label>Round 5</label><textarea id="note_round5"></textarea></div>
   </div>
 </div>
+<div class="army-lists">
+  <div class="army-panel">
+    <div class="army-label" id="armyLabelLeft">Red Army List</div>
+    <textarea id="note_army_red" placeholder="Army list…"></textarea>
+  </div>
+  <div class="army-panel">
+    <div class="army-label" id="armyLabelRight">Blue Army List</div>
+    <textarea id="note_army_blue" placeholder="Army list…"></textarea>
+  </div>
+</div>
 <div class="credits">
   board render: <a href="https://rapidingress.com" target="_blank">rapidingress.com</a> ·
   mission rules: <a href="https://gdmissions.app/11th" target="_blank">gdmissions.app</a> ·
   replays kept 30 days
 </div>
-</div>
-<div class="army-panel">
-  <div class="army-label" id="armyLabelRight">Blue Army List</div>
-  <textarea id="note_army_blue" placeholder="Army list…"></textarea>
 </div>
 </div>
 
@@ -510,8 +513,7 @@ function renderPanel(){
   sharedBar.innerHTML = `
    <div class="shared-card"><div class="player-label">Layout</div>${pill(META.map || LAYOUT_KEY)}
      ${LAYOUT_META.label ? `<div class="atk-def">${esc(LAYOUT_META.label)}${LAYOUT_KEY ? ' · ' + LAYOUT_KEY : ''}</div>` : ''}</div>
-   <div class="shared-card"><div class="player-label">Dispositions</div>${pill(disp)}</div>
-   <div class="shared-card"><div class="player-label">Twist</div>${pill((cd.twist || [])[0])}</div>`;
+   <div class="shared-card"><div class="player-label">Dispositions</div>${pill(disp)}</div>`;
 
   let rows = `<tr class="battle-ready">
     <td class="c-name-p1">Battle Ready</td><td class="tot p1">10</td><td>&mdash;</td><td>&mdash;</td>
