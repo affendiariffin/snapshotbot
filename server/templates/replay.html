@@ -204,6 +204,37 @@ const bgImg = new Image(); let bgReady = false;
 bgImg.onload = () => { bgReady = true; draw(); };
 if (LAYOUT_KEY) bgImg.src = '/static/layouts/' + LAYOUT_KEY + '.svg';
 
+// Official Base Size Guide (Event Companion, June 2026) — name match beats the Lua
+// bounds oval; Hull/unknown units keep the bounds fallback. Flying bases measure to
+// the base itself: large stem base = 60mm round, small = 32mm.
+let BASE_KEYS = [];
+const BASE_EXACT = {}, baseMemo = {};
+const normName = s => String(s).toLowerCase().replace(/’/g, "'")
+  .replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+fetch('/static/base_sizes.json').then(r => r.json()).then(d => {
+  for (const units of Object.values(d.units_mm))
+    for (let [name, size] of Object.entries(units)){
+      if (size === 'flying-large') size = 60;
+      else if (size === 'flying-small') size = 32;
+      if (typeof size === 'string') continue;   // hull / unique → bounds oval
+      BASE_EXACT[normName(name)] = size;
+    }
+  BASE_KEYS = Object.entries(BASE_EXACT).sort((a, b) => b[0].length - a[0].length);
+  draw();
+});
+function guideBase(name){
+  if (!name || !BASE_KEYS.length) return null;
+  const key = normName(name);
+  if (key in baseMemo) return baseMemo[key];
+  let mm = BASE_EXACT[key] || BASE_EXACT[key + 's'] || BASE_EXACT[key.replace(/s$/, '')] || null;
+  if (mm == null){
+    const e = BASE_KEYS.find(([k]) => k.length >= 5 && key.includes(k));
+    mm = e ? e[1] : null;
+  }
+  return baseMemo[key] = mm == null ? null :
+    {mm: mm, in: Array.isArray(mm) ? [mm[0] / 25.4, mm[1] / 25.4] : mm / 25.4};
+}
+
 function fitView(){
   const r = wrap.getBoundingClientRect();
   cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
@@ -220,7 +251,11 @@ function poly(p, close = true){
   if (close) ctx.closePath();
 }
 
-function modelBase(m){ return Array.isArray(m.b) ? m.b : (typeof m.b === 'number' ? m.b : 1.26); }
+function modelBase(m){
+  const g = guideBase(m.n);
+  if (g) return g.in;
+  return Array.isArray(m.b) ? m.b : (typeof m.b === 'number' ? m.b : 1.26);
+}
 
 function draw(){
   ctx.clearRect(0, 0, cv.width, cv.height);
@@ -330,8 +365,11 @@ cv.addEventListener('mousemove', e => {
   if (m){
     tip.style.display = 'block';
     tip.style.left = (e.offsetX + 14) + 'px'; tip.style.top = (e.offsetY + 8) + 'px';
-    const b = modelBase(m);
-    const bl = Array.isArray(b) ? (b[0] + '″ × ' + b[1] + '″') : (b + '″ base');
+    const g = guideBase(m.n), b = modelBase(m);
+    const bl = g
+      ? (Array.isArray(g.mm) ? g.mm[0] + '×' + g.mm[1] + 'mm base' : g.mm + 'mm base')
+      : (Array.isArray(b) ? (b[0].toFixed(1) + '″ × ' + b[1].toFixed(1) + '″ footprint')
+                          : (b.toFixed(1) + '″ base'));
     const col = m.t === 'red' ? '#e05555' : m.t === 'blue' ? '#5588e0' : '#9aa2b5';
     tip.innerHTML = '<b style="color:' + col + '">' + (m.n || 'model') + '</b><br><span style="color:#5a6080">' + bl + '</span>';
   } else tip.style.display = 'none';

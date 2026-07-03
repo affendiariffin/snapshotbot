@@ -29,6 +29,13 @@ CARD_ZONES = {
 -- Start Menu's dispositionValues order (index vars point into this).
 DISPOSITION_VALUES = {"Disruption", "Priority Assets", "Purge the Foe", "Reconnaissance", "Take and Hold"}
 
+-- Model capture: unlocked minis on the mat. LCT spawns terrain Locked, and dice/
+-- cards/tokens have other internal types, so type+lock filters almost everything;
+-- the exclusion list catches loose clutter by nickname substring (lowercase).
+MODEL_TYPES = {"Custom_Model", "Custom_Assetbundle", "Figurine"}
+EXCLUDE_SUBSTR = {"snapshotbot", "measuring", "ruler", "template", "objective"}
+MAT_X, MAT_Z = 31, 23
+
 GREY = {0.6, 0.6, 0.6}
 TEAL = {0.3, 0.8, 0.77}
 RED = {0.9, 0.3, 0.3}
@@ -42,6 +49,7 @@ sessionPath = sessionPath or nil
 lastSig = lastSig or nil
 lastPostAt = lastPostAt or 0
 startPending = startPending or false
+teamByGuid = teamByGuid or {}  -- sticky deployment-half fallback (GMNotes overrides)
 
 function log(msg, color)
     broadcastToAll("[Snapshotbot] " .. tostring(msg), color or GREY)
@@ -166,9 +174,75 @@ function readMeta()
     return meta
 end
 
+function isModelType(internalName)
+    for _, t in ipairs(MODEL_TYPES) do
+        if string.sub(internalName, 1, #t) == t then return true end
+    end
+    return false
+end
+
+function isExcluded(obj)
+    local n = string.lower(obj.getName() or "")
+    for _, s in ipairs(EXCLUDE_SUBSTR) do
+        if string.find(n, s, 1, true) then return true end
+    end
+    return false
+end
+
+-- Which long half belongs to Red: the red seat's hand zone anchors it.
+function redHalfSign()
+    local ok, sign = pcall(function()
+        local p = Player["Red"]
+        if p == nil then return nil end
+        local h = p.getHandTransform()
+        if h == nil or h.position.z == 0 then return nil end
+        return h.position.z > 0 and 1 or -1
+    end)
+    return ok and sign or nil
+end
+
+-- Team = GMNotes "Red"/"Blue" (the mod's own convention, set via our Tag buttons or
+-- LCT's dormant hotkeys). Fallback: table half at FIRST sighting, sticky by GUID so
+-- models keep their side after crossing the halfway line mid-game.
+function modelTeam(obj, z, redSign)
+    local gm = obj.getGMNotes()
+    if gm == "Red" then return "red" end
+    if gm == "Blue" then return "blue" end
+    if redSign == nil then return nil end
+    local g = obj.getGUID()
+    if teamByGuid[g] == nil then
+        teamByGuid[g] = ((z >= 0 and 1 or -1) == redSign) and "red" or "blue"
+    end
+    return teamByGuid[g]
+end
+
+function round(v, digits)
+    local m = 10 ^ digits
+    return math.floor(v * m + 0.5) / m
+end
+
+-- Viewer contract per model: {n=name, x, z (inches), r=rotY, b=[w,h] bounds oval
+-- (inches — the viewer's Base Size Guide name lookup beats this; b is the Hull/
+-- unknown fallback), t=team}.
 function readModels()
-    -- Task 9 fills this in (unlocked models on the mat, bounds, GMNotes team).
-    return {}
+    local models = {}
+    local redSign = redHalfSign()
+    for _, obj in ipairs(getAllObjects()) do
+        if obj ~= self and not obj.getLock() and isModelType(obj.name) and not isExcluded(obj) then
+            local p = obj.getPosition()
+            if math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z then
+                local b = obj.getBoundsNormalized().size
+                table.insert(models, {
+                    n = obj.getName(),
+                    x = round(p.x, 2), z = round(p.z, 2),
+                    r = round(obj.getRotation().y, 1),
+                    b = {round(b.x, 1), round(b.z, 1)},
+                    t = modelTeam(obj, p.z, redSign),
+                })
+            end
+        end
+    end
+    return models
 end
 
 ---------------------------------------------------------------------------
@@ -299,6 +373,30 @@ function clickLink()
     log("replay: " .. SERVER_URL .. sessionPath, TEAL)
 end
 
+-- Box-select models, then click Tag Red / Tag Blue. Writes GMNotes — the mod's own
+-- team convention — so the assignment survives save/load and beats the half-table guess.
+function tagSelected(playerColor, team)
+    local p = Player[playerColor]
+    if p == nil then return end
+    local count = 0
+    for _, obj in ipairs(p.getSelectedObjects() or {}) do
+        if not obj.getLock() and isModelType(obj.name) then
+            obj.setGMNotes(team)
+            teamByGuid[obj.getGUID()] = string.lower(team)
+            count = count + 1
+        end
+    end
+    if count == 0 then
+        log("box-select your models first, then click Tag " .. team, RED)
+    else
+        log(count .. " model(s) tagged " .. team, team == "Red" and RED or TEAL)
+        doSnapshot(nil)
+    end
+end
+
+function clickTagRed(_, playerColor) tagSelected(playerColor, "Red") end
+function clickTagBlue(_, playerColor) tagSelected(playerColor, "Blue") end
+
 ---------------------------------------------------------------------------
 -- Lifecycle
 ---------------------------------------------------------------------------
@@ -310,7 +408,7 @@ function onDestroy()
 end
 
 function onSave()
-    return JSON.encode({slug = sessionSlug, path = sessionPath})
+    return JSON.encode({slug = sessionSlug, path = sessionPath, teams = teamByGuid})
 end
 
 function onLoad(saved)
@@ -319,6 +417,7 @@ function onLoad(saved)
         if ok and st then
             sessionSlug = st.slug
             sessionPath = st.path
+            teamByGuid = st.teams or {}
         end
     end
     -- No Start/Stop/End by design: recording begins when an LCT table is detected and
@@ -336,6 +435,18 @@ function onLoad(saved)
         position = {0.26, 0.15, 0}, width = 400, height = 260, font_size = 95,
         color = {0.11, 0.13, 0.19}, font_color = {0.33, 0.53, 0.88},
         tooltip = "Broadcast the replay URL in chat",
+    })
+    self.createButton({
+        label = "Tag R", click_function = "clickTagRed", function_owner = self,
+        position = {-0.26, 0.15, 0.34}, width = 400, height = 260, font_size = 95,
+        color = {0.11, 0.13, 0.19}, font_color = {0.88, 0.33, 0.33},
+        tooltip = "Box-select models, then click to mark them as Red's",
+    })
+    self.createButton({
+        label = "Tag B", click_function = "clickTagBlue", function_owner = self,
+        position = {0.26, 0.15, 0.34}, width = 400, height = 260, font_size = 95,
+        color = {0.11, 0.13, 0.19}, font_color = {0.33, 0.53, 0.88},
+        tooltip = "Box-select models, then click to mark them as Blue's",
     })
     Wait.time(function() dedupeCheck() end, 2)  -- early check, before the first poll
     pollTimerId = Wait.time(onPollTick, POLL_SECONDS, -1)
