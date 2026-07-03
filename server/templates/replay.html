@@ -525,9 +525,33 @@ function block(cls, name, scores, primaries, secondaries, fixed){
     <div class="player-total">${s.total != null ? s.total : '—'}</div>
     <div class="total-label">Total VP</div></div>`;
 }
+// Zone capture died with LCT's tableau redesign; classify the loose face-up cards
+// instead. Primary missions are a known closed set (MISSION_DECKS); deployment
+// names are filtered; the rest are secondaries. Side comes from the token's
+// table-half tag. Zone lists win if the mod ever populates them again.
+const DEPLOY_NAMES = new Set(['hammer and anvil', 'dawn of war', 'crucible of battle',
+  'search and destroy', 'sweeping engagement', 'tipping point', 'hidden supplies']);
+function deriveCards(cd){
+  const zoned = ['red_primary', 'red_secondary', 'blue_primary', 'blue_secondary'];
+  if (zoned.some(k => (cd[k] || []).length) || !(cd.loose || []).length) return cd;
+  const out = {red_primary: [], red_secondary: [], blue_primary: [], blue_secondary: [],
+               deployment: cd.deployment || [], twist: cd.twist || [], loose: cd.loose};
+  const seen = new Set();
+  for (const c of cd.loose){
+    const base = String(c.n).replace(/\s+\d+$/, '').toLowerCase().trim();
+    if (DEPLOY_NAMES.has(base)) continue;
+    const side = c.t === 'blue' ? 'blue' : 'red';
+    const kind = MISSION_DECKS[base] ? '_primary' : '_secondary';
+    const dk = side + kind + '|' + c.n.toLowerCase();
+    if (seen.has(dk)) continue;
+    seen.add(dk);
+    out[side + kind].push(c.n);
+  }
+  return out;
+}
 function renderPanel(){
   const f = FRAMES[cur] || {};
-  const sc = f.scores || {}, cd = f.cards || {};
+  const sc = f.scores || {}, cd = deriveCards(f.cards || {});
   const p1 = sc.red || {}, p2 = sc.blue || {};
   const redName = META.red_player || 'Red', blueName = META.blue_player || 'Blue';
   const disp = (META.red_disposition && META.blue_disposition)

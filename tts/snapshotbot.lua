@@ -156,6 +156,37 @@ function readCards()
         end
         cards[key] = names
     end
+    -- LCT's newer SEC tableau boards don't overlap the legacy ScriptingTriggers,
+    -- so also capture every loose face-up card (name + position + table half);
+    -- the viewer classifies primary/secondary by name. Cards in players' HANDS
+    -- are excluded — drawn-but-hidden info must not leak into a shared replay.
+    local inHand = {}
+    for _, color in ipairs(getSeatedPlayers()) do
+        local ok, held = pcall(function() return Player[color].getHandObjects() end)
+        if ok and held then
+            for _, h in ipairs(held) do inHand[h.getGUID()] = true end
+        end
+    end
+    local loose = {}
+    local redSign = redHalfSign()
+    for _, obj in ipairs(getAllObjects()) do
+        if (obj.name == "Card" or obj.name == "CardCustom")
+            and not inHand[obj.getGUID()] and #loose < 60 then
+            local ok, fd = pcall(function() return obj.is_face_down end)
+            if ok and fd == false then
+                local n = obj.getName()
+                if n ~= nil and n ~= "" then
+                    local p = obj.getPosition()
+                    local t = nil
+                    if redSign ~= nil then
+                        t = ((p.z >= 0 and 1 or -1) == redSign) and "red" or "blue"
+                    end
+                    table.insert(loose, {n = n, x = round(p.x, 1), z = round(p.z, 1), t = t})
+                end
+            end
+        end
+    end
+    cards.loose = loose
     return cards
 end
 
