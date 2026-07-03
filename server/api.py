@@ -9,7 +9,7 @@ api = Blueprint("api", __name__)
 # Per-IP sliding-window rate limits (teams-pairing pattern). No auth by design:
 # unguessable slugs gate reads, these gate writes, 30-day TTL cleans up the rest.
 _BUCKETS = {}
-_LIMITS = {"start": 5, "snapshot": 90, "notes": 30}
+_LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60}
 
 NOTE_KEYS = {"deployment", "round1", "round2", "round3", "round4", "round5",
              "army_red", "army_blue"}
@@ -80,6 +80,21 @@ def session_data(slug):
     if bundle is None:
         return _bad("unknown session", 404)
     return jsonify({"ok": True, "session": bundle})
+
+
+@api.post("/api/log")
+def client_log():
+    # Token debug channel: lines land in Railway's log stream (`railway logs`).
+    # This project historically needs a LOT of in-TTS troubleshooting.
+    if _rate_limited("log"):
+        return _bad("rate limited", 429)
+    body = request.get_json(force=True, silent=True) or {}
+    level = str(body.get("level") or "info")[:10]
+    msg = str(body.get("msg") or "")[:500]
+    slug = str(body.get("slug") or "-")[:32]
+    guid = str(body.get("guid") or "-")[:12]
+    print(f"[tts:{level}] session={slug} token={guid} {msg}", flush=True)
+    return jsonify({"ok": True})
 
 
 @api.post("/api/notes")

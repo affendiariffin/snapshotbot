@@ -47,6 +47,27 @@ function log(msg, color)
     broadcastToAll("[Snapshotbot] " .. tostring(msg), color or GREY)
 end
 
+-- Every error lands in the server's Railway logs (visible with `railway logs`),
+-- tagged with session + token GUID. Chat only sees one red line per minute.
+lastErrBroadcast = lastErrBroadcast or 0
+
+function remoteLog(level, msg)
+    local body = {slug = sessionSlug, guid = self.getGUID(), level = level, msg = tostring(msg)}
+    pcall(function()
+        WebRequest.custom(SERVER_URL .. "/api/log", "POST", true, JSON.encode(body),
+            {["Content-Type"] = "application/json"}, function() end)
+    end)
+    print("[Snapshotbot " .. level .. "] " .. tostring(msg))
+end
+
+function logError(msg)
+    remoteLog("error", msg)
+    if os.time() - lastErrBroadcast >= 60 then
+        lastErrBroadcast = os.time()
+        log(tostring(msg) .. " (details in server log)", RED)
+    end
+end
+
 function findObj(ref)
     local o = getObjectFromGUID(ref.guid)
     if o ~= nil then return o end
@@ -192,7 +213,7 @@ function tryStartSession()
     postJson("/api/session/start", {mission_meta = ok and meta or {}}, function(resp, err)
         startPending = false
         if resp == nil or not resp.ok then
-            log("session start failed (" .. tostring(err) .. ") — retrying later", RED)
+            logError("session start failed (" .. tostring(err) .. ") — retrying later")
             return
         end
         sessionSlug = resp.slug
@@ -215,12 +236,21 @@ function doSnapshot(markLabel)
         }
     end)
     if not ok then
-        log("snapshot collect failed: " .. tostring(body), RED)
+        logError("snapshot collect failed: " .. tostring(body))
         return
     end
     postJson("/api/snapshot", body, function(resp, err)
         if resp == nil then
-            log("snapshot post failed (" .. tostring(err) .. ")", RED)
+            if err == "HTTP 404" then
+                -- Session vanished server-side (expired/removed): recover, don't spam.
+                remoteLog("warn", "session " .. tostring(sessionSlug) .. " gone — starting fresh")
+                log("session expired — starting a new one", GREY)
+                sessionSlug = nil
+                sessionPath = nil
+                lastSig = nil
+            else
+                logError("snapshot post failed (" .. tostring(err) .. ")")
+            end
         else
             lastPostAt = os.time()
         end
@@ -272,6 +302,13 @@ end
 ---------------------------------------------------------------------------
 -- Lifecycle
 ---------------------------------------------------------------------------
+function onDestroy()
+    -- Manual deletion is a legitimate way to stop recording: kill the timers,
+    -- leave the session to seal itself server-side (~90s of silence).
+    if pollTimerId then pcall(Wait.stop, pollTimerId) end
+    pcall(remoteLog, "info", "token removed — session will seal itself")
+end
+
 function onSave()
     return JSON.encode({slug = sessionSlug, path = sessionPath})
 end
@@ -299,8 +336,10 @@ function onLoad(saved)
         color = {0.11, 0.13, 0.19}, font_color = {0.33, 0.53, 0.88},
         tooltip = "Broadcast the replay URL in chat",
     })
+    -- Lock once settled: no sliding/knocking, buttons still clickable.
+    Wait.time(function() if not self.isDestroyed() then self.setLock(true) end end, 1.5)
     Wait.time(function() dedupeCheck() end, 2)  -- early check, before the first poll
-    Wait.time(onPollTick, POLL_SECONDS, -1)
+    pollTimerId = Wait.time(onPollTick, POLL_SECONDS, -1)
     if sessionSlug ~= nil then
         log("resumed session — replay: " .. SERVER_URL .. tostring(sessionPath), TEAL)
     end
