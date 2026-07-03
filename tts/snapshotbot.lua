@@ -50,6 +50,8 @@ lastSig = lastSig or nil
 lastPostAt = lastPostAt or 0
 startPending = startPending or false
 teamByGuid = teamByGuid or {}  -- sticky deployment-half fallback (GMNotes overrides)
+sentGeom = sentGeom or {}      -- mesh keys already posted this session
+geomQueue = geomQueue or {}    -- model GUIDs awaiting a one-time geometry post
 
 function log(msg, color)
     broadcastToAll("[Snapshotbot] " .. tostring(msg), color or GREY)
@@ -240,9 +242,18 @@ function unitId(obj)
     return nil
 end
 
+-- Mesh key = the ugc id in the model's mesh URL; joins snapshots to the server's
+-- geometry cache (measured base + silhouette). Asset bundles have no mesh → nil.
+function meshKey(obj)
+    local ok, co = pcall(function() return obj.getCustomObject() end)
+    if not ok or type(co) ~= "table" or not co.mesh then return nil end
+    return string.match(co.mesh, "/ugc/(%d+)/")
+end
+
 -- Viewer contract per model: {n=clean name, x, z (inches), r=rotY, b=[w,h] bounds
--- oval (inches — the viewer's Base Size Guide name lookup beats this; b is the
--- Hull/unknown fallback), t=team, w=wounds "cur/max", u=yellowscribe unit id}.
+-- oval (inches — measured base/guide lookup in the viewer beats this; b is the
+-- last-resort fallback), t=team, w=wounds "cur/max", u=yellowscribe unit id,
+-- g=mesh key, s=instance scale when not 1}.
 function readModels()
     local models = {}
     local redSign = redHalfSign()
@@ -252,6 +263,12 @@ function readModels()
             if math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z then
                 local b = obj.getBoundsNormalized().size
                 local name, wounds = cleanName(obj.getName())
+                local gk = meshKey(obj)
+                local sc = obj.getScale().x
+                if gk and not sentGeom[gk] then
+                    sentGeom[gk] = true
+                    table.insert(geomQueue, obj.getGUID())
+                end
                 table.insert(models, {
                     n = name,
                     x = round(p.x, 2), z = round(p.z, 2),
@@ -260,11 +277,43 @@ function readModels()
                     t = modelTeam(obj, p.z, redSign),
                     w = wounds,
                     u = unitId(obj),
+                    g = gk,
+                    s = math.abs(sc - 1) > 0.01 and round(sc, 2) or nil,
                 })
             end
         end
     end
     return models
+end
+
+-- One-time geometry post per unique sculpt: ship the mesh URLs + child transform to
+-- the server, which downloads and measures OFF the table. Max 3 per poll tick so a
+-- 100-model deployment never bunches WebRequests.
+function pumpGeomQueue()
+    local n = 0
+    while #geomQueue > 0 and n < 3 do
+        local obj = getObjectFromGUID(table.remove(geomQueue, 1))
+        if obj ~= nil and not obj.isDestroyed() then
+            local ok, dat = pcall(function() return obj.getData() end)
+            if ok and dat and dat.CustomMesh and dat.CustomMesh.MeshURL then
+                local body = {
+                    key = string.match(dat.CustomMesh.MeshURL, "/ugc/(%d+)/"),
+                    name = (cleanName(obj.getName())),
+                    mesh = dat.CustomMesh.MeshURL,
+                }
+                local ch = dat.ChildObjects and dat.ChildObjects[1]
+                if ch and ch.CustomMesh and ch.CustomMesh.MeshURL and ch.Transform then
+                    body.child_mesh = ch.CustomMesh.MeshURL
+                    body.child_rot = ch.Transform.rotY or 0
+                    body.child_x = ch.Transform.posX or 0
+                    body.child_z = ch.Transform.posZ or 0
+                    body.child_scale = ch.Transform.scaleX or 1
+                end
+                if body.key then postJson("/api/geom", body, function() end) end
+            end
+        end
+        n = n + 1
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -372,6 +421,7 @@ function onPollTick()
         lastSig = sig
         doSnapshot(nil)
     end
+    pcall(pumpGeomQueue)
 end
 
 ---------------------------------------------------------------------------

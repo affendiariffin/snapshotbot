@@ -1,15 +1,18 @@
+import re
 import time
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, Response, jsonify, request
 
-from server import db
+from server import db, meshgeom
 
 api = Blueprint("api", __name__)
 
 # Per-IP sliding-window rate limits (teams-pairing pattern). No auth by design:
 # unguessable slugs gate reads, these gate writes, 30-day TTL cleans up the rest.
 _BUCKETS = {}
-_LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60}
+_LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60, "geom": 30}
+
+GEOM_KEY_RE = re.compile(r"^\d{1,25}$")
 
 NOTE_KEYS = {"deployment", "round1", "round2", "round3", "round4", "round5",
              "army_red", "army_blue"}
@@ -95,6 +98,50 @@ def client_log():
     guid = str(body.get("guid") or "-")[:12]
     print(f"[tts:{level}] session={slug} token={guid} {msg}", flush=True)
     return jsonify({"ok": True})
+
+
+@api.post("/api/geom")
+def geom_submit():
+    # Token posts each new model's mesh spec once per session; the worker downloads
+    # the sculpt ONCE EVER (cached forever by key) and computes base + silhouette.
+    if _rate_limited("geom"):
+        return _bad("rate limited", 429)
+    body = request.get_json(force=True, silent=True) or {}
+    key = str(body.get("key") or "")
+    if not GEOM_KEY_RE.match(key):
+        return _bad("bad key")
+    mesh = body.get("mesh")
+    if not isinstance(mesh, str) or not mesh.startswith("http"):
+        return _bad("bad mesh url")
+    spec = {"mesh": mesh[:500], "name": str(body.get("name") or "")[:100]}
+    child = body.get("child_mesh")
+    if isinstance(child, str) and child.startswith("http"):
+        spec["child_mesh"] = child[:500]
+        for k in ("child_rot", "child_x", "child_z", "child_scale"):
+            v = body.get(k)
+            if isinstance(v, (int, float)) and abs(v) < 1e6:
+                spec[k] = v
+    meshgeom.enqueue(key, spec["name"], spec)
+    return jsonify({"ok": True})
+
+
+@api.get("/api/geom/status")
+def geom_status():
+    keys = [k for k in (request.args.get("keys") or "").split(",") if GEOM_KEY_RE.match(k)]
+    if not keys or len(keys) > 300:
+        return _bad("bad keys")
+    return jsonify({"ok": True, "geom": db.geom_status(keys)})
+
+
+@api.get("/api/geom/<key>.png")
+def geom_png(key):
+    if not GEOM_KEY_RE.match(key):
+        return _bad("bad key")
+    png = db.geom_png(key)
+    if png is None:
+        return _bad("not ready", 404)
+    return Response(png, mimetype="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @api.post("/api/notes")

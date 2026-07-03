@@ -239,16 +239,71 @@ function guideBase(name){
   return baseMemo[key] = mm == null ? null :
     {mm: mm, in: Array.isArray(mm) ? [mm[0] / 25.4, mm[1] / 25.4] : mm / 25.4};
 }
-// Guide misses inherit from yellowscribe squadmates: models share a unit id (m.u),
-// so a "Paragon Superior" takes the 50mm its "Paragon Warsuit" sisters resolved to.
+// Mesh geometry (measured base discs + top-down silhouettes), computed server-side
+// from each sculpt file and cached forever by mesh key (m.g). Beats the guide:
+// it's the actual base on the actual table.
+const GEOM = {};
+let geomVersion = 0, geomRetries = 0;
+function measuredBase(m){
+  const g = m.g && GEOM[m.g];
+  if (!g || !g.base) return null;
+  const b = g.base.d != null ? g.base.d : g.base.wh;
+  return {in: b, mm: Array.isArray(b) ? [Math.round(b[0]*25.4), Math.round(b[1]*25.4)]
+                                      : Math.round(b*25.4)};
+}
+function requestGeom(){
+  const need = [];
+  for (const f of FRAMES) for (const m of f.models || [])
+    if (m.g && !(m.g in GEOM)){ GEOM[m.g] = {}; need.push(m.g); }
+  if (!need.length) return;
+  fetch('/api/geom/status?keys=' + need.join(',')).then(r => r.json()).then(d => {
+    for (const k of need){
+      const v = (d.geom || {})[k];
+      GEOM[k] = v || {};
+      if (v && v.status === 'done' && v.sil_meta){
+        const img = new Image();
+        img.onload = () => draw();
+        img.src = '/api/geom/' + k + '.png';
+        GEOM[k].img = img;
+      }
+    }
+    geomVersion++; draw();
+    // First game with a new army: the worker may still be crunching — retry a while.
+    const unresolved = need.filter(k => !GEOM[k].status || GEOM[k].status === 'pending'
+                                        || GEOM[k].status === 'working');
+    if (unresolved.length && geomRetries < 20){
+      geomRetries++;
+      setTimeout(() => { for (const k of unresolved) delete GEOM[k]; requestGeom(); }, 45000);
+    }
+  });
+}
+function tintedSil(k, team){
+  const g = GEOM[k];
+  if (!g || !g.img || !g.img.complete || !g.img.naturalWidth) return null;
+  g._tint = g._tint || {};
+  const tk = team || 'none';
+  if (g._tint[tk]) return g._tint[tk];
+  const c = document.createElement('canvas');
+  c.width = g.img.naturalWidth; c.height = g.img.naturalHeight;
+  const x = c.getContext('2d');
+  x.drawImage(g.img, 0, 0);
+  x.globalCompositeOperation = 'source-in';
+  x.fillStyle = team === 'red' ? '#e05555' : team === 'blue' ? '#5588e0' : '#9aa2b5';
+  x.fillRect(0, 0, c.width, c.height);
+  return g._tint[tk] = c;
+}
+// Base precedence: measured disc > guide by name > yellowscribe squadmate
+// inheritance ("Paragon Superior" takes 50mm from her Warsuit sisters) > bounds.
 function resolveModels(fr){
-  if (!fr || fr._resolvedWith === BASE_KEYS.length) return;
-  fr._resolvedWith = BASE_KEYS.length;
+  const ver = BASE_KEYS.length + ':' + geomVersion;
+  if (!fr || fr._resolvedWith === ver) return;
+  fr._resolvedWith = ver;
   const unit = {};
   for (const m of fr.models || []){
-    if (m.u && !unit[m.u]){ const g = guideBase(m.n); if (g) unit[m.u] = g; }
+    if (m.u && !unit[m.u]){ const g = measuredBase(m) || guideBase(m.n); if (g) unit[m.u] = g; }
   }
-  for (const m of fr.models || []) m._g = guideBase(m.n) || (m.u && unit[m.u]) || null;
+  for (const m of fr.models || [])
+    m._g = measuredBase(m) || guideBase(m.n) || (m.u && unit[m.u]) || null;
 }
 
 function fitView(){
@@ -291,19 +346,23 @@ function draw(){
     const team = m.t === 'red' ? 'red' : (m.t === 'blue' ? 'blue' : null);
     const bodyOp = team === 'red' ? '#6e1a1a' : team === 'blue' ? '#142952' : '#3a3f4c';
     const ring = team === 'red' ? '#e05555' : team === 'blue' ? '#5588e0' : '#9aa2b5';
-    const b = modelBase(m);
+    const b = modelBase(m), sc = m.s || 1;
     ctx.save();
-    if (Array.isArray(b)){
-      ctx.translate(x, y); ctx.rotate(-(m.r || 0) * Math.PI / 180);
-      ctx.beginPath(); ctx.ellipse(0, 0, b[0] / 2 * cam.scale, b[1] / 2 * cam.scale, 0, 0, 7);
-      ctx.fillStyle = bodyOp; ctx.fill();
-      ctx.lineWidth = isHover ? 3 : 2; ctx.strokeStyle = isHover ? '#fff' : ring; ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(b[0] / 2 * cam.scale, 0);
+    ctx.translate(x, y); ctx.rotate(-(m.r || 0) * Math.PI / 180);
+    ctx.beginPath();
+    if (Array.isArray(b)) ctx.ellipse(0, 0, b[0] / 2 * sc * cam.scale, b[1] / 2 * sc * cam.scale, 0, 0, 7);
+    else ctx.arc(0, 0, b / 2 * sc * cam.scale, 0, 7);
+    ctx.fillStyle = bodyOp; ctx.fill();
+    ctx.lineWidth = isHover ? 3 : 2; ctx.strokeStyle = isHover ? '#fff' : ring; ctx.stroke();
+    const sil = m.g ? tintedSil(m.g, team) : null;
+    if (sil){
+      const gm = GEOM[m.g].sil_meta, k = cam.scale / gm.ppi * sc;
+      ctx.globalAlpha = 0.95;
+      ctx.drawImage(sil, -gm.ox * k, -gm.oy * k, sil.width * k, sil.height * k);
+      ctx.globalAlpha = 1;
+    } else if (Array.isArray(b)){
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(b[0] / 2 * sc * cam.scale, 0);
       ctx.strokeStyle = ring; ctx.lineWidth = 1.5; ctx.stroke();
-    } else {
-      ctx.beginPath(); ctx.arc(x, y, b / 2 * cam.scale, 0, 7);
-      ctx.fillStyle = bodyOp; ctx.fill();
-      ctx.lineWidth = isHover ? 2.5 : 1.5; ctx.strokeStyle = isHover ? '#fff' : ring; ctx.stroke();
     }
     ctx.restore();
   }
@@ -343,7 +402,7 @@ function hitModel(wx, wz){
   let best = null, bd = 1e9;
   for (const m of models){
     const b = modelBase(m);
-    const r = Array.isArray(b) ? Math.max(b[0], b[1]) / 2 : b / 2;
+    const r = (Array.isArray(b) ? Math.max(b[0], b[1]) / 2 : b / 2) * (m.s || 1);
     const d = Math.hypot(wx - m.x, wz - m.z);
     if (d < r + 0.3 && d < bd){ bd = d; best = m; }
   }
@@ -357,7 +416,7 @@ cv.addEventListener('mousedown', e => {
   if (tool === 'ruler'){
     const m = hitModel(wx, wz);
     const b = m ? modelBase(m) : null;
-    const r1 = m ? (Array.isArray(b) ? Math.min(b[0], b[1]) / 2 : b / 2) : null;
+    const r1 = m ? (Array.isArray(b) ? Math.min(b[0], b[1]) / 2 : b / 2) * (m.s || 1) : null;
     ruler = {x1: m ? m.x : wx, z1: m ? m.z : wz, x2: wx, z2: wz, r1: r1, r2: null};
     rulerDown = true; draw();
   }
@@ -373,7 +432,7 @@ cv.addEventListener('mousemove', e => {
     const m = hitModel(wx, wz);
     const b = m ? modelBase(m) : null;
     ruler.x2 = m ? m.x : wx; ruler.z2 = m ? m.z : wz;
-    ruler.r2 = m ? (Array.isArray(b) ? Math.min(b[0], b[1]) / 2 : b / 2) : null;
+    ruler.r2 = m ? (Array.isArray(b) ? Math.min(b[0], b[1]) / 2 : b / 2) * (m.s || 1) : null;
     draw(); return;
   }
   if (doodling && curStroke){ curStroke.pts.push([wx, wz]); draw(); return; }
@@ -583,6 +642,7 @@ function ingest(sess, first){
     if (wasAtEnd && !playing) show(FRAMES.length - 1); else show(cur);
   }
   renderBookmarks();
+  requestGeom();
   document.getElementById('liveBadge').classList.toggle('on', !ENDED);
   if (!ENDED) setTimeout(pollLive, 15000);
 }

@@ -41,6 +41,20 @@ CREATE TABLE IF NOT EXISTS sb_notes (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (session_id, cell_key)
 );
+
+-- Mesh geometry cache (permanent, NOT under the 30-day sweep): true base size +
+-- top-down silhouette per unique sculpt, keyed by the mesh URL's ugc id.
+CREATE TABLE IF NOT EXISTS sb_mesh_geom (
+    key         TEXT PRIMARY KEY,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    name        TEXT,
+    spec        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    base        JSONB,
+    sil_png     BYTEA,
+    sil_meta    JSONB,
+    error       TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -189,6 +203,88 @@ def list_sessions(limit=100):
                 }
             )
         return out
+
+
+def geom_upsert(key, name, spec):
+    # True if the key needs processing (new, or a previous attempt failed).
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT status FROM sb_mesh_geom WHERE key = %s", (key,)
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO sb_mesh_geom (key, name, spec) VALUES (%s, %s, %s)"
+                " ON CONFLICT (key) DO NOTHING",
+                (key, name, Jsonb(spec)),
+            )
+            return True
+        if row["status"] == "failed":
+            conn.execute(
+                "UPDATE sb_mesh_geom SET status = 'pending', spec = %s, error = NULL"
+                " WHERE key = %s AND status = 'failed'",
+                (Jsonb(spec), key),
+            )
+            return True
+        return False
+
+
+def geom_claim(key):
+    with get_conn() as conn:
+        row = conn.execute(
+            "UPDATE sb_mesh_geom SET status = 'working' WHERE key = %s"
+            " AND status = 'pending' RETURNING spec",
+            (key,),
+        ).fetchone()
+        return row["spec"] if row else None
+
+
+def geom_finish(key, base, png, meta):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE sb_mesh_geom SET status = 'done', base = %s, sil_png = %s,"
+            " sil_meta = %s, error = NULL WHERE key = %s",
+            (Jsonb(base), png, Jsonb(meta), key),
+        )
+
+
+def geom_fail(key, err):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE sb_mesh_geom SET status = 'failed', error = %s WHERE key = %s",
+            (err, key),
+        )
+
+
+def geom_stuck():
+    # pending = never started; working >10min = a redeploy killed the thread mid-run.
+    with get_conn() as conn:
+        rows = conn.execute(
+            "UPDATE sb_mesh_geom SET status = 'pending' WHERE status = 'pending'"
+            " OR (status = 'working' AND created_at < now() - interval '10 minutes')"
+            " RETURNING key"
+        ).fetchall()
+        return [r["key"] for r in rows]
+
+
+def geom_status(keys):
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT key, status, base, sil_meta FROM sb_mesh_geom WHERE key = ANY(%s)",
+            (keys,),
+        ).fetchall()
+        return {
+            r["key"]: {"status": r["status"], "base": r["base"], "sil_meta": r["sil_meta"]}
+            for r in rows
+        }
+
+
+def geom_png(key):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT sil_png FROM sb_mesh_geom WHERE key = %s AND status = 'done'",
+            (key,),
+        ).fetchone()
+        return bytes(row["sil_png"]) if row and row["sil_png"] else None
 
 
 def save_note(slug, cell_key, body):

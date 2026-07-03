@@ -4,7 +4,7 @@ import re
 
 from flask import Flask, jsonify, render_template
 
-from server import db
+from server import db, meshgeom
 from server.api import api
 
 app = Flask(__name__)
@@ -14,6 +14,7 @@ app.register_blueprint(api)
 # Boot-time schema + retention sweep (runs under gunicorn too, unlike main()).
 if os.environ.get("DATABASE_URL"):
     db.init_db()
+    meshgeom.resume_pending()
 
 DISP_CODES = {
     "Take and Hold": "TH", "Purge the Foe": "PF", "Disruption": "DI",
