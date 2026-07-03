@@ -33,6 +33,9 @@ GREY = {0.6, 0.6, 0.6}
 TEAL = {0.3, 0.8, 0.77}
 RED = {0.9, 0.3, 0.3}
 
+-- Marker so sibling tokens can recognise each other (common error: two tokens spawned).
+IS_SNAPSHOTBOT = true
+
 -- Globals survive Execute-Lua re-pushes during development.
 sessionSlug = sessionSlug or nil
 sessionPath = sessionPath or nil
@@ -148,6 +151,36 @@ function readModels()
 end
 
 ---------------------------------------------------------------------------
+-- Duplicate-token guard: exactly one Snapshotbot may live on a table.
+-- Survivor election: a token with a running session beats one without;
+-- ties break to the lexicographically smallest GUID. Losers self-destruct.
+---------------------------------------------------------------------------
+function dedupeCheck()
+    local mine = self.getGUID()
+    for _, obj in ipairs(getAllObjects()) do
+        if obj ~= self and not obj.isDestroyed() and obj.getName() == "Snapshotbot" then
+            local ok, isBot = pcall(function() return obj.getVar("IS_SNAPSHOTBOT") end)
+            if ok and isBot then
+                local theirSlug = nil
+                pcall(function() theirSlug = obj.getVar("sessionSlug") end)
+                local theyWin
+                if (theirSlug ~= nil) ~= (sessionSlug ~= nil) then
+                    theyWin = theirSlug ~= nil
+                else
+                    theyWin = obj.getGUID() < mine
+                end
+                if theyWin then
+                    log("duplicate Snapshotbot removed — one token per table is plenty", RED)
+                    self.destruct()
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+---------------------------------------------------------------------------
 -- Session lifecycle
 ---------------------------------------------------------------------------
 function tryStartSession()
@@ -202,6 +235,7 @@ function computeSig()
 end
 
 function onPollTick()
+    if dedupeCheck() then return end
     if sessionSlug == nil then
         tryStartSession()
         return
@@ -265,6 +299,7 @@ function onLoad(saved)
         color = {0.11, 0.13, 0.19}, font_color = {0.33, 0.53, 0.88},
         tooltip = "Broadcast the replay URL in chat",
     })
+    Wait.time(function() dedupeCheck() end, 2)  -- early check, before the first poll
     Wait.time(onPollTick, POLL_SECONDS, -1)
     if sessionSlug ~= nil then
         log("resumed session — replay: " .. SERVER_URL .. tostring(sessionPath), TEAL)
