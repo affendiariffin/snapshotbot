@@ -242,12 +242,29 @@ function unitId(obj)
     return nil
 end
 
--- Mesh key = the ugc id in the model's mesh URL; joins snapshots to the server's
--- geometry cache (measured base + silhouette). Asset bundles have no mesh → nil.
-function meshKey(obj)
-    local ok, co = pcall(function() return obj.getCustomObject() end)
-    if not ok or type(co) ~= "table" or not co.mesh then return nil end
-    return string.match(co.mesh, "/ugc/(%d+)/")
+-- Mesh key joins snapshots to the server's geometry cache. Identity = the CHILD
+-- sculpt's ugc id when the model is a base-disc + sculpt assembly (the same disc
+-- mesh is shared by many different models — ForceOrg reuses one 32mm disc for
+-- entire factions), else the parent mesh id. Needs getData(), so cache per GUID:
+-- one serialization per model per session. Asset bundles have no mesh → nil.
+guidKey = guidKey or {}
+
+function modelKey(obj)
+    local g = obj.getGUID()
+    local cached = guidKey[g]
+    if cached ~= nil then
+        if cached == false then return nil end
+        return cached
+    end
+    local key = nil
+    local ok, dat = pcall(function() return obj.getData() end)
+    if ok and dat and dat.CustomMesh and dat.CustomMesh.MeshURL then
+        local ch = dat.ChildObjects and dat.ChildObjects[1]
+        local curl = ch and ch.CustomMesh and ch.CustomMesh.MeshURL
+        key = string.match(curl or dat.CustomMesh.MeshURL, "/ugc/(%d+)/")
+    end
+    guidKey[g] = key or false
+    return key
 end
 
 -- Viewer contract per model: {n=clean name, x, z (inches), r=rotY, b=[w,h] bounds
@@ -263,7 +280,7 @@ function readModels()
             if math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z then
                 local b = obj.getBoundsNormalized().size
                 local name, wounds = cleanName(obj.getName())
-                local gk = meshKey(obj)
+                local gk = modelKey(obj)
                 local sc = obj.getScale().x
                 if gk and not sentGeom[gk] then
                     sentGeom[gk] = true
@@ -297,7 +314,7 @@ function pumpGeomQueue()
             local ok, dat = pcall(function() return obj.getData() end)
             if ok and dat and dat.CustomMesh and dat.CustomMesh.MeshURL then
                 local body = {
-                    key = string.match(dat.CustomMesh.MeshURL, "/ugc/(%d+)/"),
+                    key = modelKey(obj),
                     name = (cleanName(obj.getName())),
                     mesh = dat.CustomMesh.MeshURL,
                 }

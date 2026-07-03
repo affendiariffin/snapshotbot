@@ -266,6 +266,27 @@ def geom_stuck():
         return [r["key"] for r in rows]
 
 
+def geom_done_keys():
+    with get_conn() as conn:
+        rows = conn.execute("SELECT key FROM sb_mesh_geom WHERE status = 'done'").fetchall()
+        return {r["key"] for r in rows}
+
+
+def geom_put_done(key, name, spec, base, png, meta):
+    # Local pre-crunch upload path: lands finished rows directly, never downgrades
+    # an existing done row.
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO sb_mesh_geom (key, status, name, spec, base, sil_png, sil_meta)"
+            " VALUES (%s, 'done', %s, %s, %s, %s, %s)"
+            " ON CONFLICT (key) DO UPDATE SET status = 'done', name = EXCLUDED.name,"
+            " spec = EXCLUDED.spec, base = EXCLUDED.base, sil_png = EXCLUDED.sil_png,"
+            " sil_meta = EXCLUDED.sil_meta, error = NULL"
+            " WHERE sb_mesh_geom.status <> 'done'",
+            (key, name, Jsonb(spec), Jsonb(base), png, Jsonb(meta)),
+        )
+
+
 def geom_status(keys):
     with get_conn() as conn:
         rows = conn.execute(

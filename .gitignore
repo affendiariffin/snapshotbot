@@ -23,3 +23,5 @@ __pycache__/
 
 # Local docs (architecture + task tracking)
 docs/
+
+local/mesh_cache/

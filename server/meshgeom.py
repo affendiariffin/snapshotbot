@@ -65,14 +65,14 @@ def _base_size(verts):
     return {"wh": [round(w, 2), round(h, 2)]}
 
 
-def _triangles(spec):
+def _triangles(spec, fetch=_fetch):
     # Parent mesh (base disc or whole sculpt) + optional child sculpt transformed
     # into the parent's frame, projected to the XZ plane.
-    pv, pf = _parse_obj(_fetch(spec["mesh"]))
+    pv, pf = _parse_obj(fetch(spec["mesh"]))
     tris = [tuple((pv[i][0], pv[i][2]) for i in t) for t in pf]
     base = _base_size(pv)
     if spec.get("child_mesh"):
-        cv, cf = _parse_obj(_fetch(spec["child_mesh"]))
+        cv, cf = _parse_obj(fetch(spec["child_mesh"]))
         ry = math.radians(-(spec.get("child_rot") or 0))
         cs = spec.get("child_scale") or 1
         cx, cz = spec.get("child_x") or 0, spec.get("child_z") or 0
@@ -113,13 +113,20 @@ def _rasterize(tris):
     return buf.getvalue(), meta
 
 
+def compute(spec, fetch=_fetch):
+    # Shared by the Railway worker and the local pre-crunch tool — same math,
+    # different mesh source.
+    base, tris = _triangles(spec, fetch)
+    png, meta = _rasterize(tris)
+    return base, png, meta
+
+
 def _process(key):
     spec = db.geom_claim(key)
     if spec is None:
         return
     try:
-        base, tris = _triangles(spec)
-        png, meta = _rasterize(tris)
+        base, png, meta = compute(spec)
         db.geom_finish(key, base, png, meta)
         print(f"[geom] done key={key} name={spec.get('name')} "
               f"base={base} png={len(png) // 1024}KB", flush=True)
