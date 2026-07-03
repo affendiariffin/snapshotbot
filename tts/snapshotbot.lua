@@ -18,6 +18,12 @@ TURN_COUNTERS = {
     red = {guid = "055302", nick = "Red Turns"},
     blue = {guid = "7e4111", nick = "Blue Turns"},
 }
+-- Both are nicknamed just "Command Points", so the nickname fallback can't tell
+-- sides apart — GUID-only lookups (wrong side is worse than none).
+CP_COUNTERS = {
+    red = {guid = "e446f7", nick = nil},
+    blue = {guid = "deb9f2", nick = nil},
+}
 CARD_ZONES = {
     red_primary = {"d1e001", "d1e002"},
     blue_primary = {"d1e003", "d1e004"},
@@ -136,6 +142,7 @@ function readScores()
             primary = priSum, secondary = secSum, endOfBattle = eob, painted = 10,
             rounds = rounds,
             total = math.min(priSum + secSum + eob + 10, 100),
+            cp = readCounter(CP_COUNTERS[side.key]),
         }
     end
     return out
@@ -461,8 +468,9 @@ end
 function computeSig(modelsSig)
     local sheet = findObj(SCORESHEET)
     local sheetState = (sheet and sheet.script_state) or ""
-    return string.format("%s|%d|%d|%d|%s", sheetState,
+    return string.format("%s|%d|%d|%d|%d|%d|%s", sheetState,
         readCounter(ROUND_COUNTER), readCounter(TURN_COUNTERS.red), readCounter(TURN_COUNTERS.blue),
+        readCounter(CP_COUNTERS.red), readCounter(CP_COUNTERS.blue),
         modelsSig or "")
 end
 
