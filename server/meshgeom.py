@@ -72,19 +72,22 @@ def _base_size(verts):
 def _triangles(spec, fetch=_fetch):
     # Parent mesh (base disc or whole sculpt) + optional child sculpt transformed
     # into the parent's frame, projected to the XZ plane.
+    # TTS imports OBJ meshes with the x axis NEGATED (right-handed OBJ -> Unity
+    # left-handed), so mirror first, THEN apply the child yaw (Unity yaw is
+    # clockwise viewed from above). Calibrated live vs the table 2026-07-04.
     pv, pf = _parse_obj(fetch(spec["mesh"]))
-    tris = [tuple((pv[i][0], pv[i][2]) for i in t) for t in pf]
+    tris = [tuple((-pv[i][0], pv[i][2]) for i in t) for t in pf]
     base = _base_size(pv)
     if spec.get("child_mesh"):
         cv, cf = _parse_obj(fetch(spec["child_mesh"]))
-        ry = math.radians(-(spec.get("child_rot") or 0))
+        ry = math.radians(spec.get("child_rot") or 0)
         cs = spec.get("child_scale") or 1
         cx, cz = spec.get("child_x") or 0, spec.get("child_z") or 0
         cosr, sinr = math.cos(ry), math.sin(ry)
         for a, b, c in cf:
             tris.append(tuple(
-                (v[0] * cs * cosr - v[2] * cs * sinr + cx,
-                 v[0] * cs * sinr + v[2] * cs * cosr + cz)
+                ((-v[0] * cs) * cosr + v[2] * cs * sinr + cx,
+                 -(-v[0] * cs) * sinr + v[2] * cs * cosr + cz)
                 for v in (cv[a], cv[b], cv[c])))
     return base, tris
 

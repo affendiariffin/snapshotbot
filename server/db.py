@@ -272,17 +272,17 @@ def geom_done_keys():
         return {r["key"] for r in rows}
 
 
-def geom_put_done(key, name, spec, base, png, meta):
-    # Local pre-crunch upload path: lands finished rows directly, never downgrades
-    # an existing done row.
+def geom_put_done(key, name, spec, base, png, meta, overwrite=False):
+    # Local pre-crunch upload path: lands finished rows directly. Without overwrite
+    # it never downgrades an existing done row; overwrite is for rebakes.
+    guard = "" if overwrite else " WHERE sb_mesh_geom.status <> 'done'"
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO sb_mesh_geom (key, status, name, spec, base, sil_png, sil_meta)"
             " VALUES (%s, 'done', %s, %s, %s, %s, %s)"
             " ON CONFLICT (key) DO UPDATE SET status = 'done', name = EXCLUDED.name,"
             " spec = EXCLUDED.spec, base = EXCLUDED.base, sil_png = EXCLUDED.sil_png,"
-            " sil_meta = EXCLUDED.sil_meta, error = NULL"
-            " WHERE sb_mesh_geom.status <> 'done'",
+            " sil_meta = EXCLUDED.sil_meta, error = NULL" + guard,
             (key, name, Jsonb(spec), Jsonb(base), png, Jsonb(meta)),
         )
 

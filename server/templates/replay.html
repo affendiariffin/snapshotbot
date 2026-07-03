@@ -348,7 +348,8 @@ function draw(){
     const ring = team === 'red' ? '#e05555' : team === 'blue' ? '#5588e0' : '#9aa2b5';
     const b = modelBase(m), sc = m.s || 1;
     ctx.save();
-    ctx.translate(x, y); ctx.rotate(-(m.r || 0) * Math.PI / 180);
+    // TTS yaw is clockwise from above = clockwise on screen (calibrated live 2026-07-04)
+    ctx.translate(x, y); ctx.rotate((m.r || 0) * Math.PI / 180);
     ctx.beginPath();
     if (Array.isArray(b)) ctx.ellipse(0, 0, b[0] / 2 * sc * cam.scale, b[1] / 2 * sc * cam.scale, 0, 0, 7);
     else ctx.arc(0, 0, b / 2 * sc * cam.scale, 0, 7);

@@ -106,10 +106,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", default=FORCEORG)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--force", action="store_true", help="recompute even if already done")
+    ap.add_argument("--keys", default="", help="comma-separated keys to restrict to")
     args = ap.parse_args()
 
     specs = extract_specs(args.source)
-    done = db.geom_done_keys()
+    if args.keys:
+        want = set(args.keys.split(","))
+        specs = {k: s for k, s in specs.items() if k in want}
+    done = set() if args.force else db.geom_done_keys()
     todo = [(k, s) for k, s in specs.items() if k not in done]
     print(f"{len(specs)} unique models in source, {len(done)} already done, {len(todo)} to crunch")
     if args.limit:
@@ -120,7 +125,7 @@ def main():
     for i, (key, spec) in enumerate(todo, 1):
         try:
             base, png, meta = meshgeom.compute(spec, fetch)
-            db.geom_put_done(key, spec["name"], spec, base, png, meta)
+            db.geom_put_done(key, spec["name"], spec, base, png, meta, overwrite=args.force)
             ok += 1
         except Exception as e:  # noqa: BLE001 — log and keep crunching
             fail += 1
