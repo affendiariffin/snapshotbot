@@ -336,8 +336,6 @@ function onLoad(saved)
         color = {0.11, 0.13, 0.19}, font_color = {0.33, 0.53, 0.88},
         tooltip = "Broadcast the replay URL in chat",
     })
-    -- Lock once settled: no sliding/knocking, buttons still clickable.
-    Wait.time(function() if not self.isDestroyed() then self.setLock(true) end end, 1.5)
     Wait.time(function() dedupeCheck() end, 2)  -- early check, before the first poll
     pollTimerId = Wait.time(onPollTick, POLL_SECONDS, -1)
     if sessionSlug ~= nil then
