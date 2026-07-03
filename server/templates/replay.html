@@ -219,8 +219,8 @@ fetch('/static/base_sizes.json').then(r => r.json()).then(d => {
     for (let [name, size] of Object.entries(units)){
       if (size === 'flying-large') size = 60;
       else if (size === 'flying-small') size = 32;
-      if (typeof size === 'string') continue;   // hull / unique → bounds oval
-      BASE_EXACT[normName(name)] = size;
+      else if (size === 'unique') size = 'hull';
+      BASE_EXACT[normName(name)] = size;   // mm | [w,h]mm | 'hull'
     }
   BASE_KEYS = Object.entries(BASE_EXACT).sort((a, b) => b[0].length - a[0].length);
   draw();
@@ -240,6 +240,7 @@ function guideBase(name){
     for (const [k, v] of BASE_KEYS) if (k.startsWith(key + ' ')) mm = v;
   }
   return baseMemo[key] = mm == null ? null :
+    mm === 'hull' ? {hull: true} :
     {mm: mm, in: Array.isArray(mm) ? [mm[0] / 25.4, mm[1] / 25.4] : mm / 25.4};
 }
 // Mesh geometry (measured base discs + top-down silhouettes), computed server-side
@@ -303,10 +304,18 @@ function resolveModels(fr){
   fr._resolvedWith = ver;
   const unit = {};
   for (const m of fr.models || []){
-    if (m.u && !unit[m.u]){ const g = measuredBase(m) || guideBase(m.n); if (g) unit[m.u] = g; }
+    if (m.u && !unit[m.u]){
+      const g = measuredBase(m) || guideBase(m.n);
+      if (g && !g.hull) unit[m.u] = g;
+    }
   }
-  for (const m of fr.models || [])
-    m._g = measuredBase(m) || guideBase(m.n) || (m.u && unit[m.u]) || null;
+  for (const m of fr.models || []){
+    const gb = guideBase(m.n);
+    // Hull vehicles (guide says "Hull") have no base: render silhouette/footprint
+    // only; the measured bottom-slice still supplies dims for ruler + tooltip.
+    m._hull = !!(gb && gb.hull);
+    m._g = measuredBase(m) || (gb && !gb.hull ? gb : null) || (m.u && unit[m.u]) || null;
+  }
 }
 
 function fitView(){
@@ -353,18 +362,30 @@ function draw(){
     ctx.save();
     // TTS yaw is clockwise from above = clockwise on screen (calibrated live 2026-07-04)
     ctx.translate(x, y); ctx.rotate((m.r || 0) * Math.PI / 180);
-    ctx.beginPath();
-    if (Array.isArray(b)) ctx.ellipse(0, 0, b[0] / 2 * sc * cam.scale, b[1] / 2 * sc * cam.scale, 0, 0, 7);
-    else ctx.arc(0, 0, b / 2 * sc * cam.scale, 0, 7);
-    ctx.fillStyle = bodyOp; ctx.fill();
-    ctx.lineWidth = isHover ? 3 : 2; ctx.strokeStyle = isHover ? '#fff' : ring; ctx.stroke();
     const sil = m.g ? tintedSil(m.g, team) : null;
+    if (!m._hull){
+      ctx.beginPath();
+      if (Array.isArray(b)) ctx.ellipse(0, 0, b[0] / 2 * sc * cam.scale, b[1] / 2 * sc * cam.scale, 0, 0, 7);
+      else ctx.arc(0, 0, b / 2 * sc * cam.scale, 0, 7);
+      ctx.fillStyle = bodyOp; ctx.fill();
+      ctx.lineWidth = isHover ? 3 : 2; ctx.strokeStyle = isHover ? '#fff' : ring; ctx.stroke();
+    } else if (!sil){
+      // hull with no silhouette yet: rounded footprint rectangle reads as a vehicle
+      const w = (Array.isArray(b) ? b[0] : b) * sc * cam.scale, h = (Array.isArray(b) ? b[1] : b) * sc * cam.scale;
+      ctx.beginPath(); ctx.roundRect(-w / 2, -h / 2, w, h, Math.min(w, h) * 0.18);
+      ctx.fillStyle = bodyOp; ctx.fill();
+      ctx.lineWidth = isHover ? 3 : 2; ctx.strokeStyle = isHover ? '#fff' : ring; ctx.stroke();
+    }
     if (sil){
       const gm = GEOM[m.g].sil_meta, k = cam.scale / gm.ppi * sc;
       ctx.globalAlpha = 0.95;
       ctx.drawImage(sil, -gm.ox * k, -gm.oy * k, sil.width * k, sil.height * k);
       ctx.globalAlpha = 1;
-    } else if (Array.isArray(b)){
+      if (m._hull && isHover){
+        ctx.lineWidth = 2; ctx.strokeStyle = '#fff';
+        ctx.strokeRect(-gm.ox * k, -gm.oy * k, sil.width * k, sil.height * k);
+      }
+    } else if (!m._hull && Array.isArray(b)){
       ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(b[0] / 2 * sc * cam.scale, 0);
       ctx.strokeStyle = ring; ctx.lineWidth = 1.5; ctx.stroke();
     }
@@ -446,10 +467,11 @@ cv.addEventListener('mousemove', e => {
     tip.style.display = 'block';
     tip.style.left = (e.offsetX + 14) + 'px'; tip.style.top = (e.offsetY + 8) + 'px';
     const g = m._g, b = modelBase(m);
+    const kind = m._hull ? 'hull' : 'base';
     let bl = g
-      ? (Array.isArray(g.mm) ? g.mm[0] + '×' + g.mm[1] + 'mm base' : g.mm + 'mm base')
-      : (Array.isArray(b) ? (b[0].toFixed(1) + '″ × ' + b[1].toFixed(1) + '″ footprint')
-                          : (b.toFixed(1) + '″ base'));
+      ? (Array.isArray(g.mm) ? g.mm[0] + '×' + g.mm[1] + 'mm ' + kind : g.mm + 'mm ' + kind)
+      : (Array.isArray(b) ? (b[0].toFixed(1) + '″ × ' + b[1].toFixed(1) + '″ ' + kind)
+                          : (b.toFixed(1) + '″ ' + kind));
     if (m.w) bl += ' · ' + m.w + ' W';
     const col = m.t === 'red' ? '#e05555' : m.t === 'blue' ? '#5588e0' : '#9aa2b5';
     tip.innerHTML = '<b style="color:' + col + '">' + (m.n || 'model') + '</b><br><span style="color:#5a6080">' + bl + '</span>';
