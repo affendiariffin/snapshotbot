@@ -12,10 +12,14 @@ from PIL import Image, ImageDraw
 
 from server import db
 
-PPI = 40                     # silhouette raster px per inch
+PPI = 40                     # silhouette raster px per inch (reduced for huge meshes)
+MAX_DIM_PX = 800             # cap either raster dimension; ppi drops to fit
 PAD = 0.15                   # inches of canvas padding around the sculpt
 MAX_OBJ_BYTES = 30 * 1024 * 1024
-MAX_SPAN_IN = 16             # reject sculpts wider than this (bad export, not a model)
+# Junk guard only. Some legit meshes are authored huge and shrunk by the instance
+# scale at spawn (Rogal Dorn ships ~40 mesh-units wide) — the viewer rescales via
+# the per-model scale, so big spans are fine; only absurd ones are corrupt exports.
+MAX_SPAN_IN = 100
 
 ALLOWED_HOSTS = (".akamaihd.net", ".steamusercontent.com")
 
@@ -93,13 +97,15 @@ def _rasterize(tris):
     minx, maxx, minz, maxz = min(xs), max(xs), min(zs), max(zs)
     if maxx - minx > MAX_SPAN_IN or maxz - minz > MAX_SPAN_IN:
         raise ValueError("sculpt footprint too large")
-    w = max(1, int((maxx - minx + 2 * PAD) * PPI))
-    h = max(1, int((maxz - minz + 2 * PAD) * PPI))
+    span = max(maxx - minx, maxz - minz) + 2 * PAD
+    ppi = min(PPI, MAX_DIM_PX / span)
+    w = max(1, int((maxx - minx + 2 * PAD) * ppi))
+    h = max(1, int((maxz - minz + 2 * PAD) * ppi))
     mask = Image.new("L", (w, h), 0)
     drw = ImageDraw.Draw(mask)
 
     def px(p):
-        return ((p[0] - minx + PAD) * PPI, (maxz + PAD - p[1]) * PPI)
+        return ((p[0] - minx + PAD) * ppi, (maxz + PAD - p[1]) * ppi)
 
     for t in tris:
         drw.polygon([px(p) for p in t], fill=255)
@@ -108,8 +114,8 @@ def _rasterize(tris):
     buf = io.BytesIO()
     out.save(buf, "PNG", optimize=True)
     # (ox, oy) = pixel of the model's origin, the anchor getPosition() reports.
-    meta = {"ppi": PPI, "ox": round((0 - minx + PAD) * PPI, 1),
-            "oy": round((maxz + PAD - 0) * PPI, 1)}
+    meta = {"ppi": round(ppi, 2), "ox": round((0 - minx + PAD) * ppi, 1),
+            "oy": round((maxz + PAD - 0) * ppi, 1)}
     return buf.getvalue(), meta
 
 
