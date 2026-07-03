@@ -31,7 +31,7 @@
   .viewer-wrap{display:flex;flex-direction:column;align-items:center;width:100%;gap:0}
   .board-wrap{position:relative;width:100%;height:74vh;background:#05070c;
     border-radius:6px 6px 0 0;border:2px solid var(--border);box-shadow:0 4px 24px #0008;overflow:hidden}
-  #board{width:100%;height:100%;display:block;cursor:grab}
+  #board{width:100%;height:100%;display:block}
   #board.ruler,#board.doodle{cursor:crosshair}
   #tooltip{position:absolute;pointer-events:none;background:#000c;border:1px solid var(--border);
     border-radius:4px;padding:4px 8px;font-size:.8rem;display:none;z-index:5;white-space:nowrap}
@@ -137,8 +137,7 @@
   <button class="btn" id="dClear">&#10005;</button>
   <div class="tool-sep"></div>
   <button class="btn" id="toggleRanges">&#9711; 3&Prime; objective range</button>
-  <button class="btn" id="resetView">Reset view</button>
-  <div class="hint" id="hint">wheel = zoom &middot; drag = pan &middot; hover = unit name</div>
+  <div class="hint" id="hint">hover = unit name</div>
 </div>
 <div class="controls">
   <button class="btn" id="prev">&#8592;</button>
@@ -311,19 +310,11 @@ function hitModel(wx, wz){
   return best;
 }
 
-let dragging = false, lastPx = 0, lastPy = 0, rulerDown = false, doodling = false, curStroke = null;
-cv.addEventListener('wheel', e => {
-  e.preventDefault();
-  const k = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-  const px = e.offsetX * devicePixelRatio, py = e.offsetY * devicePixelRatio;
-  cam.ox = px - (px - cam.ox) * k; cam.oy = py - (py - cam.oy) * k; cam.scale *= k;
-  draw();
-}, {passive: false});
+let rulerDown = false, doodling = false, curStroke = null;
 cv.addEventListener('mousedown', e => {
   const px = e.offsetX * devicePixelRatio, py = e.offsetY * devicePixelRatio;
   const [wx, wz] = S2W(px, py);
-  if (tool === 'pan'){ dragging = true; lastPx = px; lastPy = py; cv.style.cursor = 'grabbing'; }
-  else if (tool === 'ruler'){
+  if (tool === 'ruler'){
     const m = hitModel(wx, wz);
     const b = m ? modelBase(m) : null;
     const r1 = m ? (Array.isArray(b) ? Math.min(b[0], b[1]) / 2 : b / 2) : null;
@@ -338,7 +329,6 @@ cv.addEventListener('mousedown', e => {
 cv.addEventListener('mousemove', e => {
   const px = e.offsetX * devicePixelRatio, py = e.offsetY * devicePixelRatio;
   const [wx, wz] = S2W(px, py);
-  if (dragging){ cam.ox += px - lastPx; cam.oy += py - lastPy; lastPx = px; lastPy = py; draw(); return; }
   if (rulerDown && ruler){
     const m = hitModel(wx, wz);
     const b = m ? modelBase(m) : null;
@@ -358,15 +348,15 @@ cv.addEventListener('mousemove', e => {
     tip.innerHTML = '<b style="color:' + col + '">' + (m.n || 'model') + '</b><br><span style="color:#5a6080">' + bl + '</span>';
   } else tip.style.display = 'none';
 });
-cv.addEventListener('mouseup', () => { dragging = false; rulerDown = false; doodling = false; curStroke = null; if (tool === 'pan') cv.style.cursor = 'grab'; });
-cv.addEventListener('mouseleave', () => { dragging = false; rulerDown = false; doodling = false; curStroke = null; tip.style.display = 'none'; });
+cv.addEventListener('mouseup', () => { rulerDown = false; doodling = false; curStroke = null; });
+cv.addEventListener('mouseleave', () => { rulerDown = false; doodling = false; curStroke = null; tip.style.display = 'none'; });
 
 function setTool(t){
   tool = (tool === t) ? 'pan' : t;
   for (const [id, name] of [['toolRuler', 'ruler'], ['toolDoodle', 'doodle']])
     document.getElementById(id).classList.toggle('active', name === tool);
   cv.className = tool === 'pan' ? '' : tool;
-  const hints = {pan: 'wheel = zoom · drag = pan · hover = unit name',
+  const hints = {pan: 'hover = unit name',
                  ruler: 'drag between models — snaps to bases, edge-to-edge inches · click Ruler again to exit',
                  doodle: 'draw on the board — strokes stick to this frame · click Doodle again to exit'};
   document.getElementById('hint').textContent = hints[tool];
@@ -380,7 +370,6 @@ document.getElementById('dBlue').onclick = function(){ doodleColor = '#1a8fff'; 
 document.getElementById('dUndo').onclick = () => { (strokes[cur] || []).pop(); draw(); };
 document.getElementById('dClear').onclick = () => { strokes[cur] = []; draw(); };
 document.getElementById('toggleRanges').onclick = function(){ showRanges = !showRanges; this.classList.toggle('active', showRanges); draw(); };
-document.getElementById('resetView').onclick = fitView;
 
 /* ---------- score panel ---------- */
 const panel = document.getElementById('dataPanel'), sharedBar = document.getElementById('sharedCardsBar');
