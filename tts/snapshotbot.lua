@@ -328,6 +328,28 @@ end
 -- Second return: a movement signature (GUID:pos:rot per model, sorted so object
 -- iteration order can't flap it) — any actual move triggers a snapshot within one
 -- 5s poll instead of waiting for the 60s heartbeat.
+-- Whose turn is running (LCT Start Menu's currentTurn, flipped by the Pass Turn
+-- HUD button) + the phase name. Drives the replay's per-player chess clock.
+phaseNames = phaseNames or nil
+
+function readTurn()
+    local sm = findObj(START_MENU)
+    if sm == nil then return nil end
+    local t = sm.getVar("currentTurn")
+    if t ~= "Red" and t ~= "Blue" then return nil end
+    local out = {active = string.lower(t)}
+    if phaseNames == nil then
+        local ok, ph = pcall(function() return sm.getTable("phases") end)
+        phaseNames = (ok and type(ph) == "table") and ph or false
+    end
+    if phaseNames then
+        local idx = tonumber(sm.getVar("currentPhase"))
+        local name = idx and phaseNames[idx]
+        if type(name) == "string" then out.phase = name end
+    end
+    return out
+end
+
 function readModels()
     local models = {}
     local sigParts = {}
@@ -464,11 +486,13 @@ end
 function doSnapshot(markLabel, models)
     if sessionSlug == nil then return end
     local ok, body = pcall(function()
+        local scores = readScores() or {}
+        scores.turn = readTurn()  -- rides in the scores blob; no schema change
         return {
             slug = sessionSlug,
             round = readCounter(ROUND_COUNTER),
             mark = markLabel,
-            scores = readScores() or {},
+            scores = scores,
             cards = readCards(),
             models = models or (readModels()),
         }
@@ -498,9 +522,11 @@ end
 function computeSig(modelsSig)
     local sheet = findObj(SCORESHEET)
     local sheetState = (sheet and sheet.script_state) or ""
-    return string.format("%s|%d|%d|%d|%d|%d|%s", sheetState,
+    local turn = readTurn()
+    return string.format("%s|%d|%d|%d|%d|%d|%s|%s", sheetState,
         readCounter(ROUND_COUNTER), readCounter(TURN_COUNTERS.red), readCounter(TURN_COUNTERS.blue),
         readCounter(CP_COUNTERS.red), readCounter(CP_COUNTERS.blue),
+        turn and (turn.active .. (turn.phase or "")) or "",
         modelsSig or "")
 end
 
