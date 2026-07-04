@@ -241,9 +241,27 @@ function redHalfSign()
     return ok and sign or nil
 end
 
+-- "Who placed it" beats geography: every drop by the seated Red/Blue player claims
+-- still-unassigned models for that side. Fires for all objects table-wide (global
+-- event, received by object scripts too); costs a table write, no WebRequest.
+-- GMNotes still wins; first claim is sticky.
+function onObjectDrop(playerColor, obj)
+    if playerColor ~= "Red" and playerColor ~= "Blue" then return end
+    local ok = pcall(function()
+        if obj ~= nil and not obj.isDestroyed() and isModelType(obj.name) then
+            local g = obj.getGUID()
+            if teamByGuid[g] == nil then
+                teamByGuid[g] = string.lower(playerColor)
+            end
+        end
+    end)
+    return ok
+end
+
 -- Team = GMNotes "Red"/"Blue" (the mod's own convention, set via our Tag buttons or
--- LCT's dormant hotkeys). Fallback: table half at FIRST sighting, sticky by GUID so
--- models keep their side after crossing the halfway line mid-game.
+-- LCT's dormant hotkeys). Then who-dropped-it (above). Fallback: table half at
+-- FIRST sighting, sticky by GUID so models keep their side after crossing the
+-- halfway line mid-game.
 function modelTeam(obj, z, redSign)
     local gm = obj.getGMNotes()
     if gm == "Red" then return "red" end
