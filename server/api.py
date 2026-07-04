@@ -1,3 +1,5 @@
+import hmac
+import os
 import re
 import time
 
@@ -6,6 +8,18 @@ from flask import Blueprint, Response, jsonify, request
 from server import db, meshgeom
 
 api = Blueprint("api", __name__)
+
+# Single-admin security (Fendi, 2026-07-05): only the holder of the admin cookie
+# may rename/delete sessions or edit notes; everyone else is read-only + download.
+# Cookie is set by visiting /admin/<key> once per browser. Unset key = open mode
+# (local dev); token-facing endpoints (snapshot/geom/log) stay open by design.
+ADMIN_KEY = os.environ.get("SB_ADMIN_KEY", "")
+
+
+def is_admin():
+    if not ADMIN_KEY:
+        return True
+    return hmac.compare_digest(request.cookies.get("sb_admin", ""), ADMIN_KEY)
 
 # Per-IP sliding-window rate limits (teams-pairing pattern). No auth by design:
 # unguessable slugs gate reads, these gate writes, 30-day TTL cleans up the rest.
@@ -102,6 +116,8 @@ def client_log():
 
 @api.post("/api/session/<slug>/rename")
 def session_rename(slug):
+    if not is_admin():
+        return _bad("read-only", 403)
     if _rate_limited("admin"):
         return _bad("rate limited", 429)
     body = request.get_json(force=True, silent=True) or {}
@@ -115,6 +131,8 @@ def session_rename(slug):
 
 @api.post("/api/session/<slug>/delete")
 def session_delete(slug):
+    if not is_admin():
+        return _bad("read-only", 403)
     if _rate_limited("admin"):
         return _bad("rate limited", 429)
     if not db.delete_session(slug):
@@ -168,6 +186,8 @@ def geom_png(key):
 
 @api.post("/api/notes")
 def save_note():
+    if not is_admin():
+        return _bad("read-only", 403)
     if _rate_limited("notes"):
         return _bad("rate limited", 429)
     body = request.get_json(force=True, silent=True) or {}

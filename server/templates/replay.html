@@ -194,6 +194,8 @@ const LAYOUT_KEY = {{ layout_key | tojson }};
 const LAYOUT_META = {{ layout_meta_json | safe }};
 // Non-null in the downloaded self-contained copy: all data inlined, no server calls.
 const EMBEDDED = {{ (embedded_json or 'null') | safe }};
+// Admin cookie holder: server-persisted edits (notes/army lists). Others read-only.
+const ADMIN = {{ 'true' if admin else 'false' }};
 
 const MISSION_DECKS = {
   "battlefield dominance":"take-and-hold","immovable object":"take-and-hold",
@@ -757,10 +759,16 @@ document.addEventListener('keydown', e => {
 const NOTE_KEYS = ['deployment', 'round1', 'round2', 'round3', 'round4', 'round5', 'army_red', 'army_blue'];
 const noteTimers = {};
 function wireNotes(){
+  const readonly = !ADMIN && !EMBEDDED;   // offline copies stay editable (local-only)
+  if (readonly){
+    const h = document.querySelector('.notebook h3 span');
+    if (h) h.textContent = '— read-only · download an offline copy to annotate';
+  }
   for (const k of NOTE_KEYS){
     const ta = document.getElementById('note_' + k);
     if (!ta) continue;
     ta.value = NOTES[k] || '';
+    if (readonly){ ta.readOnly = true; continue; }
     ta.addEventListener('input', () => {
       if (EMBEDDED) return;   // offline copy: edits are yours alone, nothing to save to
       clearTimeout(noteTimers[k]);

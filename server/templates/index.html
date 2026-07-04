@@ -60,9 +60,9 @@
     </div>
   </div>
   <div class="acts">
-    <button data-act="rename" title="Rename this game">rename</button>
+    {% if admin %}<button data-act="rename" title="Rename this game">rename</button>{% endif %}
     <a href="/r/{{ s.slug }}/download" title="Self-contained HTML — survives the purge">download</a>
-    <button class="del" data-act="delete" title="Delete this game">&#10005;</button>
+    {% if admin %}<button class="del" data-act="delete" title="Delete this game">&#10005;</button>{% endif %}
   </div>
 </div>
 {% else %}
@@ -75,6 +75,7 @@
 <script>
 document.querySelectorAll('.session').forEach(card => {
   const slug = card.dataset.slug;
+  if (!card.querySelector('[data-act="rename"]')) return;   // read-only visitor
   card.querySelector('[data-act="rename"]').addEventListener('click', () => {
     const tEl = card.querySelector('[data-role="title"]');
     const input = document.createElement('input');

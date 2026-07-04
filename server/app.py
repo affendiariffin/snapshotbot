@@ -1,11 +1,12 @@
+import hmac
 import json
 import os
 import re
 
-from flask import Flask, Response, jsonify, render_template
+from flask import Flask, Response, jsonify, redirect, render_template
 
 from server import db, meshgeom
-from server.api import api
+from server.api import ADMIN_KEY, api, is_admin
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
@@ -59,9 +60,20 @@ def health():
     return jsonify({"ok": True, "service": "snapshotbot"})
 
 
+@app.get("/admin/<key>")
+def admin_login(key):
+    # Fendi's one-click login: sets the admin cookie for a year on this browser.
+    if not ADMIN_KEY or not hmac.compare_digest(key, ADMIN_KEY):
+        return "Unknown link.", 403
+    resp = redirect("/")
+    resp.set_cookie("sb_admin", ADMIN_KEY, max_age=365 * 24 * 3600,
+                    httponly=True, secure=True, samesite="Lax")
+    return resp
+
+
 @app.get("/")
 def index():
-    return render_template("index.html", sessions=db.list_sessions())
+    return render_template("index.html", sessions=db.list_sessions(), admin=is_admin())
 
 
 @app.get("/r/<slug>")
@@ -77,6 +89,7 @@ def replay(slug):
         layout_key=key,
         layout_meta_json=json.dumps(lay or {}, ensure_ascii=False),
         embedded_json=None,
+        admin=is_admin(),
     )
 
 
@@ -105,6 +118,7 @@ def replay_download(slug):
         layout_meta_json=json.dumps(lay or {}, ensure_ascii=False),
         # </script> inside embedded strings would terminate the script tag
         embedded_json=json.dumps(embedded, ensure_ascii=False).replace("</", "<\\/"),
+        admin=False,
     )
     date = bundle["started_at"][:10]
     return Response(html, mimetype="text/html", headers={
