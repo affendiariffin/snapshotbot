@@ -426,7 +426,8 @@ function tryStartSession()
         end
         sessionSlug = resp.slug
         sessionPath = resp.path
-        log("recording — replay: " .. SERVER_URL .. sessionPath, TEAL)
+        publishLink()
+        log("recording — replay link in the Notebook (top of screen)", TEAL)
         doSnapshot(nil)
     end)
 end
@@ -504,12 +505,31 @@ function clickMark(_, playerColor)
     log("moment marked (" .. label .. ")", TEAL)
 end
 
+-- Chat links aren't clickable in TTS; the Notebook's text is selectable/copyable,
+-- so the replay URL lives there too (plus the index page for bookmark-and-click).
+function publishLink()
+    if sessionPath == nil then return end
+    local body = "Replay / live scoreboard for THIS game:\n" .. SERVER_URL .. sessionPath
+        .. "\n\n(select the URL above and Ctrl+C)\n\nAll replays: " .. SERVER_URL
+    local ok, tabs = pcall(getNotebookTabs)
+    if ok and tabs ~= nil then
+        for _, t in ipairs(tabs) do
+            if t.title == "Snapshotbot" then
+                pcall(editNotebookTab, {index = t.index, title = "Snapshotbot", body = body})
+                return
+            end
+        end
+    end
+    pcall(addNotebookTab, {title = "Snapshotbot", body = body})
+end
+
 function clickLink()
     if sessionPath == nil then
         log("no session yet", RED)
         return
     end
-    log("replay: " .. SERVER_URL .. sessionPath, TEAL)
+    publishLink()
+    log("replay: " .. SERVER_URL .. sessionPath .. " (copyable in the Notebook)", TEAL)
 end
 
 -- Box-select models, then click Tag Red / Tag Blue. Writes GMNotes — the mod's own
@@ -603,6 +623,7 @@ function onLoad(saved)
     Wait.time(function() dedupeCheck() end, 2)  -- early check, before the first poll
     pollTimerId = Wait.time(onPollTick, POLL_SECONDS, -1)
     if sessionSlug ~= nil then
-        log("resumed session — replay: " .. SERVER_URL .. tostring(sessionPath), TEAL)
+        publishLink()
+        log("resumed session — replay link in the Notebook", TEAL)
     end
 end
