@@ -45,14 +45,19 @@ def walk(o):
 def collect():
     d = json.load(open(MOD, encoding="utf-8"))
     out = {}
+    secondaries = set()
     for o in walk({"ContainedObjects": d["ObjectStates"]}):
         n = o.get("Nickname") or ""
+        if o.get("Name") == "Deck" and re.search(r"secondar", n, re.I):
+            for c in o.get("ContainedObjects") or []:
+                if c.get("Nickname"):
+                    secondaries.add(norm(c["Nickname"]))
         if o.get("Name") != "CardCustom" or not n or MAP_CARD_RE.search(n):
             continue
         for spec in (o.get("CustomDeck") or {}).values():
             if spec.get("NumWidth") == 1 and spec.get("NumHeight") == 1 and spec.get("FaceURL"):
                 out.setdefault(norm(n), (n, spec["FaceURL"]))
-    return out
+    return out, secondaries
 
 
 def fetch(url):
@@ -75,7 +80,16 @@ def main():
     ap.add_argument("--force", action="store_true")
     args = ap.parse_args()
 
-    cards = collect()
+    cards, secondaries = collect()
+    # Closed vocabulary for the viewer's loose-card classifier: anything that is
+    # neither a known primary nor in the secondary pool is table furniture
+    # (map cards, deck back-cards like "Tactical Objectives") and gets ignored.
+    names_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              "server", "static", "card_names.json")
+    with open(names_path, "w", encoding="utf-8") as f:
+        json.dump({"secondaries": sorted(secondaries)}, f, indent=0)
+    print(f"wrote {len(secondaries)} secondary names -> card_names.json")
+
     done = set() if args.force else db.card_keys()
     todo = {k: v for k, v in cards.items() if k not in done}
     print(f"{len(cards)} cards in mod, {len(done)} already stored, {len(todo)} to do")

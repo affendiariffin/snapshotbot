@@ -605,11 +605,14 @@ function block(cls, name, scores, primaries, secondaries, fixed){
     <div class="total-label">Total VP${s.cp != null ? ' · ' + s.cp + ' CP' : ''}</div></div>`;
 }
 // Zone capture died with LCT's tableau redesign; classify the loose face-up cards
-// instead. Primary missions are a known closed set (MISSION_DECKS); deployment
-// names are filtered; the rest are secondaries. Side comes from the token's
-// table-half tag. Zone lists win if the mod ever populates them again.
-const DEPLOY_NAMES = new Set(['hammer and anvil', 'dawn of war', 'crucible of battle',
-  'search and destroy', 'sweeping engagement', 'tipping point', 'hidden supplies']);
+// instead — against CLOSED vocabularies only. Primaries = the 25 mission names
+// (MISSION_DECKS); secondaries = the pool extracted from LCT's own decks
+// (card_names.json). Anything else on the table (map cards, deck back-cards,
+// deployment/twist) is furniture and is ignored. Side = the token's half tag.
+let SECONDARY_KEYS = new Set();
+function loadCardNames(d){ SECONDARY_KEYS = new Set(d.secondaries || []); renderPanel(); }
+if (EMBEDDED) setTimeout(() => loadCardNames(EMBEDDED.card_names || {}), 0);
+else fetch('/static/card_names.json').then(r => r.json()).then(loadCardNames).catch(() => {});
 function deriveCards(cd){
   const zoned = ['red_primary', 'red_secondary', 'blue_primary', 'blue_secondary'];
   if (zoned.some(k => (cd[k] || []).length) || !(cd.loose || []).length) return cd;
@@ -618,9 +621,11 @@ function deriveCards(cd){
   const seen = new Set();
   for (const c of cd.loose){
     const base = String(c.n).replace(/\s+\d+$/, '').toLowerCase().trim();
-    if (DEPLOY_NAMES.has(base)) continue;
+    let kind = null;
+    if (MISSION_DECKS[base]) kind = '_primary';
+    else if (SECONDARY_KEYS.has(cardKey(c.n))) kind = '_secondary';
+    if (!kind) continue;   // not in any known pool: table furniture
     const side = c.t === 'blue' ? 'blue' : 'red';
-    const kind = MISSION_DECKS[base] ? '_primary' : '_secondary';
     const dk = side + kind + '|' + c.n.toLowerCase();
     if (seen.has(dk)) continue;
     seen.add(dk);

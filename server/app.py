@@ -119,9 +119,11 @@ def replay_download(slug):
                 card_names.add(c["n"])
     card_keys = {re.sub(r"[^a-z0-9]", "", re.sub(r"^(a|an|the)\s+", "", n.lower().strip()))
                  for n in card_names}
+    with open(os.path.join(app.static_folder, "card_names.json"), encoding="utf-8") as f:
+        card_names_json = json.load(f)
     embedded = {"session": bundle, "geom": db.geom_export(keys),
                 "layout_svg": layout_svg, "base_sizes": base_sizes,
-                "cards": db.cards_export(card_keys)}
+                "cards": db.cards_export(card_keys), "card_names": card_names_json}
     html = render_template(
         "replay.html",
         slug=slug,
