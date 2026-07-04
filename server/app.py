@@ -109,8 +109,18 @@ def replay_download(slug):
             layout_svg = f.read()
     with open(os.path.join(app.static_folder, "base_sizes.json"), encoding="utf-8") as f:
         base_sizes = json.load(f)
+    card_names = set()
+    for s in bundle["snapshots"]:
+        cd = s.get("cards") or {}
+        for k in ("red_primary", "blue_primary", "red_secondary", "blue_secondary"):
+            card_names.update(cd.get(k) or [])
+        for c in cd.get("loose") or []:
+            if c.get("n"):
+                card_names.add(c["n"])
+    card_keys = {re.sub(r"[^a-z0-9]", "", n.lower()) for n in card_names}
     embedded = {"session": bundle, "geom": db.geom_export(keys),
-                "layout_svg": layout_svg, "base_sizes": base_sizes}
+                "layout_svg": layout_svg, "base_sizes": base_sizes,
+                "cards": db.cards_export(card_keys)}
     html = render_template(
         "replay.html",
         slug=slug,

@@ -25,3 +25,4 @@ __pycache__/
 docs/
 
 local/mesh_cache/
+local/card_cache/

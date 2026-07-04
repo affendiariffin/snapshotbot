@@ -27,6 +27,7 @@ _BUCKETS = {}
 _LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60, "geom": 30, "admin": 20}
 
 GEOM_KEY_RE = re.compile(r"^\d{1,25}(-\d{1,25})?$")
+CARD_KEY_RE = re.compile(r"^[a-z0-9]{1,80}$")
 
 NOTE_KEYS = {"deployment", "round1", "round2", "round3", "round4", "round5",
              "army_red", "army_blue"}
@@ -171,6 +172,17 @@ def geom_status():
     if not keys or len(keys) > 300:
         return _bad("bad keys")
     return jsonify({"ok": True, "geom": db.geom_status(keys)})
+
+
+@api.get("/api/card/<key>.jpg")
+def card_img(key):
+    if not CARD_KEY_RE.match(key):
+        return _bad("bad key")
+    img = db.card_get(key)
+    if img is None:
+        return _bad("no such card", 404)
+    return Response(img, mimetype="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @api.get("/api/geom/<key>.png")

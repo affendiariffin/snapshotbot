@@ -62,6 +62,12 @@
   .bookmark{background:#2a2410;border:1px solid #6a5a20;color:var(--accent);border-radius:12px;
     padding:3px 10px;font-size:.75rem;cursor:pointer;flex-shrink:0}
   .bookmark:hover{background:#3a3418}
+  .mcards{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}
+  .mcard{width:138px;border-radius:7px;border:1px solid var(--border);cursor:zoom-in;display:block}
+  .mcard:hover{border-color:var(--accent)}
+  #lightbox{display:none;position:fixed;inset:0;background:#000d;z-index:50;
+    align-items:center;justify-content:center;cursor:zoom-out}
+  #lightbox img{max-height:92vh;max-width:92vw;border-radius:10px}
   .time-row{display:flex;align-items:center;gap:12px;width:100%;background:var(--panel);
     border:2px solid var(--border);border-top:none;border-radius:0 0 6px 6px;
     padding:6px 10px;margin-top:-6px}
@@ -193,9 +199,9 @@
 </div>
 <div class="credits">
   board render: <a href="https://rapidingress.com" target="_blank">rapidingress.com</a> ·
-  mission rules: <a href="https://gdmissions.app/11th" target="_blank">gdmissions.app</a> ·
   replays kept 30 days<span id="dlWrap"> · <a id="dlLink" href="#">download offline copy</a></span><span id="saveWrap" style="display:none"> · <a id="saveLink" href="#">save this copy (with your notes &amp; doodles)</a></span>
 </div>
+<div id="lightbox" onclick="this.style.display='none'"><img alt=""></div>
 </div>
 </div>
 
@@ -561,22 +567,37 @@ function pill(name, tag){
   return `<div class="card-pill">${esc(name)}${tag ? `<span class="pill-tag">${tag}</span>` : ''}</div>`;
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-function missionPill(name){
+// Actual card faces from the LCT mod (sb_card_images), shown inline — no links
+// to third-party rules sites. Missing image → plain pill via onerror.
+function cardKey(name){ return String(name).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function cardOrPill(name, tag){
   if (!name) return '<div class="card-pill empty">— none —</div>';
-  const base = String(name).replace(/\s+\d+$/, '').toLowerCase();
-  const deck = MISSION_DECKS[base];
-  if (!deck) return pill(name);
-  const slug = base.replace(/'/g, '').replace(/\s+/g, '-');
-  return `<a class="card-pill pill-link" href="https://gdmissions.app/11th/primary-missions/${deck}/${slug}" target="_blank">${esc(name)}<span class="pill-tag">rules ↗</span></a>`;
+  const key = cardKey(name);
+  const src = EMBEDDED
+    ? ((EMBEDDED.cards || {})[key] ? 'data:image/jpeg;base64,' + EMBEDDED.cards[key] : null)
+    : '/api/card/' + key + '.jpg';
+  if (!src) return pill(name, tag);
+  return `<img class="mcard" loading="lazy" src="${src}" alt="${esc(name)}" title="${esc(name)}"
+    data-name="${esc(name)}" data-tag="${tag || ''}" onclick="lightbox(this)" onerror="cardFail(this)">`;
+}
+function cardFail(img){
+  const d = document.createElement('div');
+  d.innerHTML = pill(img.dataset.name, img.dataset.tag || undefined);
+  img.replaceWith(d.firstChild);
+}
+function lightbox(img){
+  const lb = document.getElementById('lightbox');
+  lb.querySelector('img').src = img.src;
+  lb.style.display = 'flex';
 }
 function block(cls, name, scores, primaries, secondaries, fixed){
   const s = scores || {};
   return `<div class="player-block ${cls}">
     <div class="player-name">&#9632; ${esc(name)}</div>
     <div class="player-label">Primary Mission — from disposition</div>
-    ${(primaries && primaries.length ? primaries.map(missionPill).join('') : missionPill(null))}
+    <div class="mcards">${(primaries && primaries.length ? primaries.map(n => cardOrPill(n)).join('') : cardOrPill(null))}</div>
     <div class="player-label">Secondaries — active</div>
-    ${(secondaries && secondaries.length ? secondaries.map(n => pill(n, fixed ? 'fixed' : 'tactical')).join('') : pill(null))}
+    <div class="mcards">${(secondaries && secondaries.length ? secondaries.map(n => cardOrPill(n, fixed ? 'fixed' : 'tactical')).join('') : cardOrPill(null))}</div>
     <div class="player-total">${s.total != null ? s.total : '—'}</div>
     <div class="total-label">Total VP${s.cp != null ? ' · ' + s.cp + ' CP' : ''}</div></div>`;
 }

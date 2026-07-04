@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS sb_notes (
     PRIMARY KEY (session_id, cell_key)
 );
 
+-- Mission/secondary card face images from the LCT mod (permanent cache; shown in
+-- the replay panel instead of linking out to third-party rules sites).
+CREATE TABLE IF NOT EXISTS sb_card_images (
+    key         TEXT PRIMARY KEY,
+    name        TEXT,
+    img         BYTEA NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Mesh geometry cache (permanent, NOT under the 30-day sweep): true base size +
 -- top-down silhouette per unique sculpt, keyed by the mesh URL's ugc id.
 CREATE TABLE IF NOT EXISTS sb_mesh_geom (
@@ -249,6 +258,36 @@ def list_sessions(limit=100):
                 }
             )
         return out
+
+
+def card_put(key, name, img):
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO sb_card_images (key, name, img) VALUES (%s, %s, %s)"
+            " ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, img = EXCLUDED.img",
+            (key, name, img),
+        )
+
+
+def card_get(key):
+    with get_conn() as conn:
+        row = conn.execute("SELECT img FROM sb_card_images WHERE key = %s", (key,)).fetchone()
+        return bytes(row["img"]) if row else None
+
+
+def card_keys():
+    with get_conn() as conn:
+        return {r["key"] for r in conn.execute("SELECT key FROM sb_card_images").fetchall()}
+
+
+def cards_export(keys):
+    if not keys:
+        return {}
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT key, img FROM sb_card_images WHERE key = ANY(%s)", (list(keys),)
+        ).fetchall()
+        return {r["key"]: base64.b64encode(bytes(r["img"])).decode() for r in rows}
 
 
 def geom_upsert(key, name, spec):
