@@ -10,8 +10,17 @@
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;
        display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:20px 16px;gap:14px}
-  .header{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap}
+  .header{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;position:relative}
   .header-text{text-align:center}
+  .home-btn{position:absolute;left:0;top:50%;transform:translateY(-50%);background:var(--panel);
+    border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:7px 14px;
+    font-size:.8rem;text-decoration:none;letter-spacing:.05em}
+  .home-btn:hover{color:var(--text);border-color:var(--accent)}
+  .role-pill{position:absolute;right:0;top:50%;transform:translateY(-50%);border-radius:12px;
+    padding:4px 12px;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase}
+  .role-pill.admin{background:#2a2410;border:1px solid #6a5a20;color:var(--accent)}
+  .role-pill.guest{background:var(--panel);border:1px solid var(--border);color:var(--muted)}
+  @media (max-width:700px){.home-btn,.role-pill{position:static;transform:none}}
   .header h1{font-size:1.3rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
   .header h1 a{color:inherit;text-decoration:none}
   .header .sub{font-size:.75rem;color:var(--muted);margin-top:2px}
@@ -120,11 +129,13 @@
 </head>
 <body>
 <div class="header">
+  <a class="home-btn" id="homeBtn" href="/">&#8962; Home</a>
   <div class="header-text">
     <h1><a href="/">Fendi's Snapshotbot</a></h1>
     <div class="sub" id="headerSub">loading…</div>
   </div>
   <span class="livebadge" id="liveBadge">● live</span>
+  <span class="role-pill {{ 'admin' if admin else 'guest' }}" id="rolePill">{{ 'Admin' if admin else 'Guest' }}</span>
 </div>
 
 <div class="page-layout">
@@ -857,6 +868,9 @@ if (EMBEDDED){
   document.getElementById('dlWrap').style.display = 'none';
   document.getElementById('saveWrap').style.display = '';
   document.getElementById('saveLink').onclick = e => { e.preventDefault(); saveOfflineCopy(); };
+  document.getElementById('homeBtn').style.display = 'none';   // no server to go home to
+  const rp = document.getElementById('rolePill');
+  rp.className = 'role-pill guest'; rp.textContent = 'Offline copy';
 } else document.getElementById('dlLink').href = '/r/' + SLUG + '/download';
 
 new ResizeObserver(fitView).observe(wrap);

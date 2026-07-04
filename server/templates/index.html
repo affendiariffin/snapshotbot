@@ -11,6 +11,11 @@
   body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;
        max-width:860px;margin:0 auto;padding:28px 16px}
   h1{font-size:1.4rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);text-align:center}
+  .role-pill{position:absolute;right:16px;top:30px;border-radius:12px;
+    padding:4px 12px;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase}
+  .role-pill.admin{background:#2a2410;border:1px solid #6a5a20;color:var(--accent)}
+  .role-pill.guest{background:var(--panel);border:1px solid var(--border);color:var(--muted)}
+  body{position:relative}
   .sub{font-size:.8rem;color:var(--muted);text-align:center;margin:6px 0 26px;line-height:1.5}
   .session{display:flex;align-items:center;gap:12px;background:var(--panel);
     border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:10px}
@@ -36,6 +41,7 @@
 </style>
 </head>
 <body>
+<span class="role-pill {{ 'admin' if admin else 'guest' }}">{{ 'Admin' if admin else 'Guest' }}</span>
 <h1>Fendi's Snapshotbot</h1>
 <div class="sub">Recorded TTS 40k games — live scoreboard while playing, full board replay after.<br>
   Newest 10 games kept, 30 days max — <b>download</b> a game to keep it forever.</div>
