@@ -259,19 +259,14 @@ function onObjectDrop(playerColor, obj)
 end
 
 -- Team = GMNotes "Red"/"Blue" (the mod's own convention, set via our Tag buttons or
--- LCT's dormant hotkeys). Then who-dropped-it (above). Fallback: table half at
--- FIRST sighting, sticky by GUID so models keep their side after crossing the
--- halfway line mid-game.
-function modelTeam(obj, z, redSign)
+-- LCT's dormant hotkeys), else who-dropped-it (above), else nil → grey in the
+-- viewer until claimed. NO table-half guessing: infiltrators deploy in the wrong
+-- half, and a wrong colour is worse than an honest grey (Fendi, 2026-07-05).
+function modelTeam(obj)
     local gm = obj.getGMNotes()
     if gm == "Red" then return "red" end
     if gm == "Blue" then return "blue" end
-    if redSign == nil then return nil end
-    local g = obj.getGUID()
-    if teamByGuid[g] == nil then
-        teamByGuid[g] = ((z >= 0 and 1 or -1) == redSign) and "red" or "blue"
-    end
-    return teamByGuid[g]
+    return teamByGuid[obj.getGUID()]
 end
 
 function round(v, digits)
@@ -333,7 +328,7 @@ end
 function readModels()
     local models = {}
     local sigParts = {}
-    local redSign = redHalfSign()
+    local guids = {}
     for _, obj in ipairs(getAllObjects()) do
         if obj ~= self and not obj.getLock() and isModelType(obj.name) and not isExcluded(obj) then
             local p = obj.getPosition()
@@ -353,13 +348,26 @@ function readModels()
                     x = round(p.x, 2), z = round(p.z, 2),
                     r = round(rot, 1),
                     b = {round(b.x, 1), round(b.z, 1)},
-                    t = modelTeam(obj, p.z, redSign),
+                    t = modelTeam(obj),
                     w = wounds,
                     u = unitId(obj),
                     g = gk,
                     s = math.abs(sc - 1) > 0.01 and round(sc, 2) or nil,
                 })
+                table.insert(guids, obj.getGUID())
             end
+        end
+    end
+    -- One claimed model colours its whole yellowscribe unit (dropping a single
+    -- infiltrator claims the squad); persists so the claim is sticky.
+    local unitTeam = {}
+    for _, m in ipairs(models) do
+        if m.u and m.t and unitTeam[m.u] == nil then unitTeam[m.u] = m.t end
+    end
+    for i, m in ipairs(models) do
+        if m.u and m.t == nil and unitTeam[m.u] ~= nil then
+            m.t = unitTeam[m.u]
+            teamByGuid[guids[i]] = m.t
         end
     end
     table.sort(sigParts)
