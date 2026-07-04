@@ -10,7 +10,7 @@ api = Blueprint("api", __name__)
 # Per-IP sliding-window rate limits (teams-pairing pattern). No auth by design:
 # unguessable slugs gate reads, these gate writes, 30-day TTL cleans up the rest.
 _BUCKETS = {}
-_LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60, "geom": 30}
+_LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60, "geom": 30, "admin": 20}
 
 GEOM_KEY_RE = re.compile(r"^\d{1,25}$")
 
@@ -97,6 +97,28 @@ def client_log():
     slug = str(body.get("slug") or "-")[:32]
     guid = str(body.get("guid") or "-")[:12]
     print(f"[tts:{level}] session={slug} token={guid} {msg}", flush=True)
+    return jsonify({"ok": True})
+
+
+@api.post("/api/session/<slug>/rename")
+def session_rename(slug):
+    if _rate_limited("admin"):
+        return _bad("rate limited", 429)
+    body = request.get_json(force=True, silent=True) or {}
+    title = body.get("title")
+    if title is not None and (not isinstance(title, str) or len(title) > 80):
+        return _bad("bad title")
+    if not db.rename_session(slug, (title or "").strip()):
+        return _bad("unknown session", 404)
+    return jsonify({"ok": True})
+
+
+@api.post("/api/session/<slug>/delete")
+def session_delete(slug):
+    if _rate_limited("admin"):
+        return _bad("rate limited", 429)
+    if not db.delete_session(slug):
+        return _bad("unknown session", 404)
     return jsonify({"ok": True})
 
 

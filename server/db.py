@@ -1,3 +1,4 @@
+import base64
 import os
 import secrets
 
@@ -7,6 +8,9 @@ from psycopg.types.json import Jsonb
 
 # Retention window for sessions and everything under them (Fendi: 30 days, no archive).
 RETENTION_DAYS = 30
+# Hard cap on stored sessions (Fendi, 2026-07-05): creating game #11 deletes the
+# oldest. Friends who want to keep a game use the self-contained HTML download.
+MAX_SESSIONS = 10
 # Sessions end by abandonment: the token heartbeats every 60s while TTS is open, so
 # one missed beat plus poll jitter means everyone left (no End button by design).
 # A false seal (network blip) self-heals: the next snapshot reopens the session.
@@ -72,6 +76,7 @@ def get_conn():
 def init_db():
     with get_conn() as conn:
         conn.execute(SCHEMA)
+        conn.execute("ALTER TABLE sb_sessions ADD COLUMN IF NOT EXISTS title TEXT")
     expire_old_sessions()
     finalize_stale_sessions()
 
@@ -95,10 +100,48 @@ def create_session(meta):
                     "INSERT INTO sb_sessions (slug, mission_meta) VALUES (%s, %s)",
                     (slug, Jsonb(meta)),
                 )
+                conn.execute(
+                    "DELETE FROM sb_sessions WHERE id NOT IN"
+                    " (SELECT id FROM sb_sessions ORDER BY started_at DESC LIMIT %s)",
+                    (MAX_SESSIONS,),
+                )
                 return slug
             except psycopg.errors.UniqueViolation:
                 conn.rollback()
         raise RuntimeError("could not allocate session slug")
+
+
+def rename_session(slug, title):
+    with get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE sb_sessions SET title = %s WHERE slug = %s", (title or None, slug)
+        )
+        return cur.rowcount > 0
+
+
+def delete_session(slug):
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM sb_sessions WHERE slug = %s", (slug,))
+        return cur.rowcount > 0
+
+
+def geom_export(keys):
+    # For the self-contained HTML download: everything the viewer needs, PNGs included.
+    if not keys:
+        return {}
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT key, base, sil_meta, sil_png FROM sb_mesh_geom"
+            " WHERE key = ANY(%s) AND status = 'done'",
+            (list(keys),),
+        ).fetchall()
+        return {
+            r["key"]: {
+                "status": "done", "base": r["base"], "sil_meta": r["sil_meta"],
+                "png_b64": base64.b64encode(bytes(r["sil_png"])).decode() if r["sil_png"] else None,
+            }
+            for r in rows
+        }
 
 
 def _session_id(conn, slug, open_only=False):
@@ -147,7 +190,8 @@ def finalize_stale_sessions():
 def get_session_bundle(slug, after_id=0):
     with get_conn() as conn:
         sess = conn.execute(
-            "SELECT id, slug, started_at, ended_at, mission_meta FROM sb_sessions WHERE slug = %s",
+            "SELECT id, slug, title, started_at, ended_at, mission_meta"
+            " FROM sb_sessions WHERE slug = %s",
             (slug,),
         ).fetchone()
         if sess is None:
@@ -162,6 +206,7 @@ def get_session_bundle(slug, after_id=0):
         ).fetchall()
         return {
             "slug": sess["slug"],
+            "title": sess["title"],
             "started_at": sess["started_at"].isoformat(),
             "ended_at": sess["ended_at"].isoformat() if sess["ended_at"] else None,
             "mission_meta": sess["mission_meta"],
@@ -184,7 +229,7 @@ def get_session_bundle(slug, after_id=0):
 def list_sessions(limit=100):
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT s.slug, s.started_at, s.ended_at, s.mission_meta,"
+            "SELECT s.slug, s.title, s.started_at, s.ended_at, s.mission_meta,"
             " count(sn.id) AS snaps, max(sn.round) AS max_round"
             " FROM sb_sessions s LEFT JOIN sb_snapshots sn ON sn.session_id = s.id"
             " GROUP BY s.id ORDER BY s.started_at DESC LIMIT %s",
@@ -195,6 +240,7 @@ def list_sessions(limit=100):
             out.append(
                 {
                     "slug": r["slug"],
+                    "title": r["title"],
                     "started_at": r["started_at"].isoformat(),
                     "ended": r["ended_at"] is not None,
                     "mission_meta": r["mission_meta"],

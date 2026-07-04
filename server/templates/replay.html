@@ -169,7 +169,7 @@
 <div class="credits">
   board render: <a href="https://rapidingress.com" target="_blank">rapidingress.com</a> ·
   mission rules: <a href="https://gdmissions.app/11th" target="_blank">gdmissions.app</a> ·
-  replays kept 30 days
+  replays kept 30 days<span id="dlWrap"> · <a id="dlLink" href="#">download offline copy</a></span>
 </div>
 </div>
 </div>
@@ -178,6 +178,8 @@
 const SLUG = {{ slug | tojson }};
 const LAYOUT_KEY = {{ layout_key | tojson }};
 const LAYOUT_META = {{ layout_meta_json | safe }};
+// Non-null in the downloaded self-contained copy: all data inlined, no server calls.
+const EMBEDDED = {{ (embedded_json or 'null') | safe }};
 
 const MISSION_DECKS = {
   "battlefield dominance":"take-and-hold","immovable object":"take-and-hold",
@@ -205,7 +207,9 @@ const HX = 30, HZ = 22;
 
 const bgImg = new Image(); let bgReady = false;
 bgImg.onload = () => { bgReady = true; draw(); };
-if (LAYOUT_KEY) bgImg.src = '/static/layouts/' + LAYOUT_KEY + '.svg';
+if (EMBEDDED && EMBEDDED.layout_svg)
+  bgImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(EMBEDDED.layout_svg);
+else if (LAYOUT_KEY) bgImg.src = '/static/layouts/' + LAYOUT_KEY + '.svg';
 
 // Official Base Size Guide (Event Companion, June 2026) — name match beats the Lua
 // bounds oval; Hull/unknown units keep the bounds fallback. Flying bases measure to
@@ -214,7 +218,7 @@ let BASE_KEYS = [];
 const BASE_EXACT = {}, baseMemo = {};
 const normName = s => String(s).toLowerCase().replace(/’/g, "'")
   .replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim();
-fetch('/static/base_sizes.json').then(r => r.json()).then(d => {
+function loadBaseSizes(d){
   for (const units of Object.values(d.units_mm))
     for (let [name, size] of Object.entries(units)){
       if (size === 'flying-large') size = 60;
@@ -224,7 +228,10 @@ fetch('/static/base_sizes.json').then(r => r.json()).then(d => {
     }
   BASE_KEYS = Object.entries(BASE_EXACT).sort((a, b) => b[0].length - a[0].length);
   draw();
-});
+}
+// Deferred a tick: loadBaseSizes -> draw() touches declarations further down.
+if (EMBEDDED) setTimeout(() => loadBaseSizes(EMBEDDED.base_sizes), 0);
+else fetch('/static/base_sizes.json').then(r => r.json()).then(loadBaseSizes);
 function guideBase(name){
   if (!name || !BASE_KEYS.length) return null;
   const key = normName(name);
@@ -256,6 +263,20 @@ function measuredBase(m){
                                       : Math.round(b*25.4)};
 }
 function requestGeom(){
+  if (EMBEDDED){
+    for (const [k, v] of Object.entries(EMBEDDED.geom || {})){
+      if (k in GEOM) continue;
+      GEOM[k] = {status: v.status, base: v.base, sil_meta: v.sil_meta};
+      if (v.png_b64 && v.sil_meta){
+        const img = new Image();
+        img.onload = () => draw();
+        img.src = 'data:image/png;base64,' + v.png_b64;
+        GEOM[k].img = img;
+      }
+    }
+    geomVersion++; draw();
+    return;
+  }
   const need = [];
   for (const f of FRAMES) for (const m of f.models || [])
     if (m.g && !(m.g in GEOM)){ GEOM[m.g] = {}; need.push(m.g); }
@@ -660,6 +681,7 @@ function wireNotes(){
     if (!ta) continue;
     ta.value = NOTES[k] || '';
     ta.addEventListener('input', () => {
+      if (EMBEDDED) return;   // offline copy: edits are yours alone, nothing to save to
       clearTimeout(noteTimers[k]);
       noteTimers[k] = setTimeout(() => {
         fetch('/api/notes', {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -681,8 +703,10 @@ function ingest(sess, first){
   if (first){
     NOTES = sess.notes || {};
     wireNotes();
+    const auto = `${META.red_player || 'Red'} vs ${META.blue_player || 'Blue'} — ${META.map || 'LCT game'}`;
     document.getElementById('headerSub').textContent =
-      `${META.red_player || 'Red'} vs ${META.blue_player || 'Blue'} — ${META.map || 'LCT game'}`;
+      (sess.title ? sess.title + ' · ' : '') + auto + (EMBEDDED ? ' · offline copy' : '');
+    if (sess.title) document.title = sess.title + ' — Snapshotbot';
     document.getElementById('armyLabelLeft').textContent = (META.red_player || 'Red') + ' Army List';
     document.getElementById('armyLabelRight').textContent = (META.blue_player || 'Blue') + ' Army List';
     show(FRAMES.length - 1);
@@ -701,9 +725,17 @@ function pollLive(){
     .then(d => { if (d.ok) ingest(d.session, false); })
     .catch(() => setTimeout(pollLive, 30000));
 }
-fetch(`/api/session/${SLUG}/data`)
-  .then(r => r.json())
-  .then(d => { if (d.ok) ingest(d.session, true); });
+if (EMBEDDED){
+  EMBEDDED.session.ended_at = EMBEDDED.session.ended_at || 'exported';   // never poll
+  ingest(EMBEDDED.session, true);
+} else {
+  fetch(`/api/session/${SLUG}/data`)
+    .then(r => r.json())
+    .then(d => { if (d.ok) ingest(d.session, true); });
+}
+
+if (EMBEDDED) document.getElementById('dlWrap').style.display = 'none';
+else document.getElementById('dlLink').href = '/r/' + SLUG + '/download';
 
 new ResizeObserver(fitView).observe(wrap);
 fitView();

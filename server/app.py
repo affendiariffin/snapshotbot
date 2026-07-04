@@ -2,7 +2,7 @@ import json
 import os
 import re
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, Response, jsonify, render_template
 
 from server import db, meshgeom
 from server.api import api
@@ -76,7 +76,39 @@ def replay(slug):
         slug=slug,
         layout_key=key,
         layout_meta_json=json.dumps(lay or {}, ensure_ascii=False),
+        embedded_json=None,
     )
+
+
+@app.get("/r/<slug>/download")
+def replay_download(slug):
+    # Self-contained HTML export: session data, layout SVG, base-size guide and
+    # silhouette PNGs all inlined — survives the 30-day purge, works offline.
+    bundle = db.get_session_bundle(slug)
+    if bundle is None:
+        return "Unknown or expired session (replays keep for 30 days).", 404
+    key = layout_key(bundle["mission_meta"])
+    lay = layouts_meta().get(key) if key else None
+    keys = {m.get("g") for s in bundle["snapshots"] for m in (s.get("models") or []) if m.get("g")}
+    layout_svg = None
+    if key:
+        with open(os.path.join(app.static_folder, "layouts", key + ".svg"), encoding="utf-8") as f:
+            layout_svg = f.read()
+    with open(os.path.join(app.static_folder, "base_sizes.json"), encoding="utf-8") as f:
+        base_sizes = json.load(f)
+    embedded = {"session": bundle, "geom": db.geom_export(keys),
+                "layout_svg": layout_svg, "base_sizes": base_sizes}
+    html = render_template(
+        "replay.html",
+        slug=slug,
+        layout_key=key,
+        layout_meta_json=json.dumps(lay or {}, ensure_ascii=False),
+        # </script> inside embedded strings would terminate the script tag
+        embedded_json=json.dumps(embedded, ensure_ascii=False).replace("</", "<\\/"),
+    )
+    date = bundle["started_at"][:10]
+    return Response(html, mimetype="text/html", headers={
+        "Content-Disposition": f'attachment; filename="snapshotbot_{date}_{slug}.html"'})
 
 
 def main():

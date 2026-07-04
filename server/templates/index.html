@@ -10,40 +10,61 @@
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;
        max-width:860px;margin:0 auto;padding:28px 16px}
-  h1{font-size:1.3rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);text-align:center}
-  .sub{font-size:.78rem;color:var(--muted);text-align:center;margin:4px 0 22px}
-  a.session{display:block;background:var(--panel);border:1px solid var(--border);border-radius:8px;
-    padding:12px 16px;margin-bottom:10px;color:var(--text);text-decoration:none}
-  a.session:hover{border-color:var(--accent)}
-  .row1{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
-  .players{font-weight:700}
-  .players .r{color:var(--red)} .players .b{color:var(--blue)}
-  .live{color:#2dce6a;font-size:.75rem;text-transform:uppercase;letter-spacing:.08em}
+  h1{font-size:1.4rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);text-align:center}
+  .sub{font-size:.8rem;color:var(--muted);text-align:center;margin:6px 0 26px;line-height:1.5}
+  .session{display:flex;align-items:center;gap:12px;background:var(--panel);
+    border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:10px}
+  .session:hover{border-color:var(--accent)}
+  .body{flex:1;min-width:0;cursor:pointer}
+  .title-row{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+  .title{font-weight:700;font-size:1.02rem}
+  .title .r{color:var(--red)} .title .b{color:var(--blue)}
+  .live{color:#2dce6a;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em}
   .meta{font-size:.8rem;color:var(--muted);margin-top:3px}
+  .acts{display:flex;gap:6px;flex-shrink:0}
+  .acts button,.acts a{background:var(--card);border:1px solid var(--border);color:var(--muted);
+    border-radius:5px;padding:6px 10px;font-size:.78rem;cursor:pointer;text-decoration:none;
+    font-family:inherit;line-height:1}
+  .acts button:hover,.acts a:hover{color:var(--text);border-color:var(--accent)}
+  .acts .del:hover{color:var(--red);border-color:var(--red)}
+  .rename-input{background:var(--card);border:1px solid var(--accent);color:var(--text);
+    border-radius:4px;padding:3px 8px;font-size:1rem;font-family:inherit;font-weight:700;width:100%}
   .empty{color:var(--muted);text-align:center;padding:40px 0;font-style:italic}
   .credits{font-size:.7rem;color:var(--muted);text-align:center;margin-top:26px}
   .credits a{color:var(--muted)}
+  @media (max-width:600px){.session{flex-wrap:wrap}.acts{width:100%;justify-content:flex-end}}
 </style>
 </head>
 <body>
 <h1>Fendi's Snapshotbot</h1>
-<div class="sub">TTS 40k game replays · kept for 30 days</div>
+<div class="sub">Recorded TTS 40k games — live scoreboard while playing, full board replay after.<br>
+  Newest 10 games kept, 30 days max — <b>download</b> a game to keep it forever.</div>
 {% for s in sessions %}
-<a class="session" href="/r/{{ s.slug }}">
-  <div class="row1">
-    <span class="players">
-      <span class="r">{{ s.mission_meta.get('red_player') or 'Red' }}</span>
-      <span style="color:var(--muted)"> vs </span>
-      <span class="b">{{ s.mission_meta.get('blue_player') or 'Blue' }}</span>
-    </span>
-    {% if not s.ended %}<span class="live">● live</span>{% endif %}
+<div class="session" data-slug="{{ s.slug }}">
+  <div class="body" onclick="location.href='/r/{{ s.slug }}'">
+    <div class="title-row">
+      <span class="title" data-role="title">
+        {%- if s.title -%}
+          {{ s.title }}
+        {%- else -%}
+          <span class="r">{{ s.mission_meta.get('red_player') or 'Red' }}</span><span
+          style="color:var(--muted)"> vs </span><span class="b">{{ s.mission_meta.get('blue_player') or 'Blue' }}</span>
+        {%- endif -%}
+      </span>
+      {% if not s.ended %}<span class="live">● live</span>{% endif %}
+    </div>
+    <div class="meta">
+      {{ s.mission_meta.get('map') or 'unknown map' }} ·
+      round {{ s.max_round }} · {{ s.snaps }} snapshots ·
+      {{ s.started_at[:16].replace('T', ' ') }} UTC
+    </div>
   </div>
-  <div class="meta">
-    {{ s.mission_meta.get('map') or 'unknown map' }} ·
-    round {{ s.max_round }} · {{ s.snaps }} snapshots ·
-    {{ s.started_at[:16].replace('T', ' ') }} UTC
+  <div class="acts">
+    <button data-act="rename" title="Rename this game">rename</button>
+    <a href="/r/{{ s.slug }}/download" title="Self-contained HTML — survives the purge">download</a>
+    <button class="del" data-act="delete" title="Delete this game">&#10005;</button>
   </div>
-</a>
+</div>
 {% else %}
 <div class="empty">No games in the last 30 days — drop the Snapshotbot token on an LCT table.</div>
 {% endfor %}
@@ -51,5 +72,41 @@
   board renders: <a href="https://rapidingress.com" target="_blank">rapidingress.com</a> ·
   mission rules: <a href="https://gdmissions.app/11th" target="_blank">gdmissions.app</a>
 </div>
+<script>
+document.querySelectorAll('.session').forEach(card => {
+  const slug = card.dataset.slug;
+  card.querySelector('[data-act="rename"]').addEventListener('click', () => {
+    const tEl = card.querySelector('[data-role="title"]');
+    const input = document.createElement('input');
+    input.className = 'rename-input';
+    input.value = tEl.textContent.trim();
+    input.maxLength = 80;
+    tEl.replaceWith(input);
+    input.focus(); input.select();
+    let done = false;
+    const commit = save => {
+      if (done) return; done = true;
+      if (!save){ location.reload(); return; }
+      fetch('/api/session/' + slug + '/rename', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({title: input.value.trim()}),
+      }).then(() => location.reload());
+    };
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') commit(true);
+      if (e.key === 'Escape') commit(false);
+    });
+    input.addEventListener('blur', () => commit(true));
+    input.addEventListener('click', e => e.stopPropagation());
+  });
+  card.querySelector('[data-act="delete"]').addEventListener('click', () => {
+    const nEl = card.querySelector('[data-role="title"], .rename-input');
+    const name = (nEl.value || nEl.textContent || slug).trim();
+    if (!confirm('Delete "' + name + '" permanently? Download it first if anyone wants to keep it.')) return;
+    fetch('/api/session/' + slug + '/delete', {method: 'POST'})
+      .then(() => card.remove());
+  });
+});
+</script>
 </body>
 </html>
