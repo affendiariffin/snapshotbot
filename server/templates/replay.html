@@ -183,17 +183,21 @@
 <div class="credits">
   board render: <a href="https://rapidingress.com" target="_blank">rapidingress.com</a> ·
   mission rules: <a href="https://gdmissions.app/11th" target="_blank">gdmissions.app</a> ·
-  replays kept 30 days<span id="dlWrap"> · <a id="dlLink" href="#">download offline copy</a></span>
+  replays kept 30 days<span id="dlWrap"> · <a id="dlLink" href="#">download offline copy</a></span><span id="saveWrap" style="display:none"> · <a id="saveLink" href="#">save this copy (with your notes &amp; doodles)</a></span>
 </div>
 </div>
 </div>
 
+<script id="embeddedData">
+// Non-null in the downloaded self-contained copy: all data inlined, no server calls.
+// Own script tag so "save copy" can rewrite just this block before reserializing.
+window.EMBEDDED_DATA = {{ (embedded_json or 'null') | safe }};
+</script>
 <script>
 const SLUG = {{ slug | tojson }};
 const LAYOUT_KEY = {{ layout_key | tojson }};
 const LAYOUT_META = {{ layout_meta_json | safe }};
-// Non-null in the downloaded self-contained copy: all data inlined, no server calls.
-const EMBEDDED = {{ (embedded_json or 'null') | safe }};
+const EMBEDDED = window.EMBEDDED_DATA;
 // Admin cookie holder: server-persisted edits (notes/army lists). Others read-only.
 const ADMIN = {{ 'true' if admin else 'false' }};
 
@@ -815,17 +819,45 @@ function pollLive(){
     .then(d => { if (d.ok) ingest(d.session, false); })
     .catch(() => setTimeout(pollLive, 30000));
 }
+// Their file, their rules (Fendi, 2026-07-05): an offline copy is fully editable
+// and can SAVE — it rewrites its own embedded data block (notes + doodles) and
+// re-downloads itself as a new self-contained file. No server involved.
+function saveOfflineCopy(){
+  const notes = {};
+  for (const k of NOTE_KEYS){
+    const ta = document.getElementById('note_' + k);
+    if (ta) notes[k] = ta.value;
+  }
+  const data = Object.assign({}, EMBEDDED);
+  data.session = Object.assign({}, EMBEDDED.session, {notes: notes});
+  data.strokes = strokes;
+  document.getElementById('embeddedData').textContent =
+    'window.EMBEDDED_DATA = ' + JSON.stringify(data).replace(/<\//g, '<\\/') + ';';
+  const blob = new Blob(['<!DOCTYPE html>\n' + document.documentElement.outerHTML],
+                        {type: 'text/html'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'snapshotbot_' + SLUG + '_annotated.html';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 if (EMBEDDED){
   EMBEDDED.session.ended_at = EMBEDDED.session.ended_at || 'exported';   // never poll
   ingest(EMBEDDED.session, true);
+  if (EMBEDDED.strokes) EMBEDDED.strokes.forEach((s, i) => { strokes[i] = s || []; });
+  draw();
 } else {
   fetch(`/api/session/${SLUG}/data`)
     .then(r => r.json())
     .then(d => { if (d.ok) ingest(d.session, true); });
 }
 
-if (EMBEDDED) document.getElementById('dlWrap').style.display = 'none';
-else document.getElementById('dlLink').href = '/r/' + SLUG + '/download';
+if (EMBEDDED){
+  document.getElementById('dlWrap').style.display = 'none';
+  document.getElementById('saveWrap').style.display = '';
+  document.getElementById('saveLink').onclick = e => { e.preventDefault(); saveOfflineCopy(); };
+} else document.getElementById('dlLink').href = '/r/' + SLUG + '/download';
 
 new ResizeObserver(fitView).observe(wrap);
 fitView();
