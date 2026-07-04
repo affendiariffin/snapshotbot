@@ -62,9 +62,11 @@
   .bookmark{background:#2a2410;border:1px solid #6a5a20;color:var(--accent);border-radius:12px;
     padding:3px 10px;font-size:.75rem;cursor:pointer;flex-shrink:0}
   .bookmark:hover{background:#3a3418}
-  .mcards{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0}
-  .mcard{width:138px;border-radius:7px;border:1px solid var(--border);cursor:zoom-in;display:block}
+  .mcards{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0;min-height:195px}
+  .mcard{width:138px;border-radius:7px;border:1px solid var(--border);cursor:zoom-in;display:block;align-self:flex-start}
   .mcard:hover{border-color:var(--accent)}
+  .mcard-empty{width:138px;aspect-ratio:100/141;border:1px dashed var(--border);border-radius:7px;
+    display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.75rem;font-style:italic}
   #lightbox{display:none;position:fixed;inset:0;background:#000d;z-index:50;
     align-items:center;justify-content:center;cursor:zoom-out}
   #lightbox img{max-height:92vh;max-width:92vw;border-radius:10px}
@@ -574,7 +576,7 @@ function cardKey(name){
   return String(name).toLowerCase().trim().replace(/^(a|an|the)\s+/, '').replace(/[^a-z0-9]/g, '');
 }
 function cardOrPill(name, tag){
-  if (!name) return '<div class="card-pill empty">— none —</div>';
+  if (!name) return '<div class="mcard-empty">— none —</div>';
   const key = cardKey(name);
   const src = EMBEDDED
     ? ((EMBEDDED.cards || {})[key] ? 'data:image/jpeg;base64,' + EMBEDDED.cards[key] : null)
