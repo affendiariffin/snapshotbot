@@ -522,20 +522,10 @@ function onPollTick()
 end
 
 ---------------------------------------------------------------------------
--- Buttons
+-- Replay link (no buttons — the token is fully automatic; Fendi, 2026-07-05)
 ---------------------------------------------------------------------------
-function clickMark(_, playerColor)
-    if sessionSlug == nil then
-        log("no session yet", RED)
-        return
-    end
-    local label = "R" .. readCounter(ROUND_COUNTER) .. " mark by " .. tostring(playerColor)
-    doSnapshot(label)
-    log("moment marked (" .. label .. ")", TEAL)
-end
-
 -- Chat links aren't clickable in TTS; the Notebook's text is selectable/copyable,
--- so the replay URL lives there too (plus the index page for bookmark-and-click).
+-- so the replay URL lives there (plus the welcome page for bookmark-and-click).
 function publishLink()
     if sessionPath == nil then return end
     local body = "Replay / live scoreboard for THIS game:\n" .. SERVER_URL .. sessionPath
@@ -551,52 +541,6 @@ function publishLink()
     end
     pcall(addNotebookTab, {title = "Snapshotbot", body = body})
 end
-
-function clickLink()
-    if sessionPath == nil then
-        log("no session yet", RED)
-        return
-    end
-    publishLink()
-    log("replay: " .. SERVER_URL .. sessionPath .. " (copyable in the Notebook)", TEAL)
-end
-
--- Box-select models, then click Tag Red / Tag Blue. Writes GMNotes — the mod's own
--- team convention — so the assignment survives save/load and beats the half-table
--- guess. Tagging any model of a yellowscribe unit (uuid: tag) tags the whole unit.
-function tagSelected(playerColor, team)
-    local p = Player[playerColor]
-    if p == nil then return end
-    local picked, units = {}, {}
-    for _, obj in ipairs(p.getSelectedObjects() or {}) do
-        if not obj.getLock() and isModelType(obj.name) then
-            picked[obj.getGUID()] = obj
-            local u = unitId(obj)
-            if u then units[u] = true end
-        end
-    end
-    if next(units) ~= nil then
-        for _, obj in ipairs(getAllObjects()) do
-            local u = isModelType(obj.name) and unitId(obj)
-            if u and units[u] then picked[obj.getGUID()] = obj end
-        end
-    end
-    local count = 0
-    for _, obj in pairs(picked) do
-        obj.setGMNotes(team)
-        teamByGuid[obj.getGUID()] = string.lower(team)
-        count = count + 1
-    end
-    if count == 0 then
-        log("box-select your models first, then click Tag " .. team, RED)
-    else
-        log(count .. " model(s) tagged " .. team, team == "Red" and RED or TEAL)
-        doSnapshot(nil)
-    end
-end
-
-function clickTagRed(_, playerColor) tagSelected(playerColor, "Red") end
-function clickTagBlue(_, playerColor) tagSelected(playerColor, "Blue") end
 
 ---------------------------------------------------------------------------
 -- Lifecycle
@@ -621,34 +565,10 @@ function onLoad(saved)
             teamByGuid = st.teams or {}
         end
     end
-    -- No Start/Stop/End by design: recording begins when an LCT table is detected and
-    -- the session seals itself server-side after ~90s of silence (players left TTS).
-    -- Sized for the PiecePack_Arms vessel (Shinebot's single button: 900x280 @ {0,0.1,0}).
-    -- Plain-text labels: TTS's button font drops emoji glyphs.
-    self.createButton({
-        label = "Mark", click_function = "clickMark", function_owner = self,
-        position = {-0.26, 0.15, 0}, width = 400, height = 260, font_size = 95,
-        color = {0.11, 0.13, 0.19}, font_color = {0.94, 0.75, 0.25},
-        tooltip = "Bookmark this moment on the replay timeline",
-    })
-    self.createButton({
-        label = "Link", click_function = "clickLink", function_owner = self,
-        position = {0.26, 0.15, 0}, width = 400, height = 260, font_size = 95,
-        color = {0.11, 0.13, 0.19}, font_color = {0.33, 0.53, 0.88},
-        tooltip = "Broadcast the replay URL in chat",
-    })
-    self.createButton({
-        label = "Tag R", click_function = "clickTagRed", function_owner = self,
-        position = {-0.26, 0.15, 0.34}, width = 400, height = 260, font_size = 95,
-        color = {0.11, 0.13, 0.19}, font_color = {0.88, 0.33, 0.33},
-        tooltip = "Box-select models, then click to mark them as Red's",
-    })
-    self.createButton({
-        label = "Tag B", click_function = "clickTagBlue", function_owner = self,
-        position = {0.26, 0.15, 0.34}, width = 400, height = 260, font_size = 95,
-        color = {0.11, 0.13, 0.19}, font_color = {0.33, 0.53, 0.88},
-        tooltip = "Box-select models, then click to mark them as Blue's",
-    })
+    -- No buttons, no Start/Stop/End — fully automatic by design: recording begins
+    -- when an LCT table is detected, the replay URL lands in chat + Notebook, teams
+    -- come from who-drops-models, and the session seals itself server-side after
+    -- ~90s of silence (players left TTS).
     Wait.time(function() dedupeCheck() end, 2)  -- early check, before the first poll
     pollTimerId = Wait.time(onPollTick, POLL_SECONDS, -1)
     if sessionSlug ~= nil then
