@@ -28,7 +28,10 @@ JPEG_Q = 87
 
 
 def norm(name):
-    return re.sub(r"[^a-z0-9]", "", name.lower())
+    # leading articles vary between deck copies and played copies
+    # ("Grievous Blow" vs "A Grievous Blow") — strip before collapsing
+    n = re.sub(r"^(a|an|the)\s+", "", name.lower().strip())
+    return re.sub(r"[^a-z0-9]", "", n)
 
 
 def walk(o):

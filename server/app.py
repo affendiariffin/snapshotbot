@@ -117,7 +117,8 @@ def replay_download(slug):
         for c in cd.get("loose") or []:
             if c.get("n"):
                 card_names.add(c["n"])
-    card_keys = {re.sub(r"[^a-z0-9]", "", n.lower()) for n in card_names}
+    card_keys = {re.sub(r"[^a-z0-9]", "", re.sub(r"^(a|an|the)\s+", "", n.lower().strip()))
+                 for n in card_names}
     embedded = {"session": bundle, "geom": db.geom_export(keys),
                 "layout_svg": layout_svg, "base_sizes": base_sizes,
                 "cards": db.cards_export(card_keys)}

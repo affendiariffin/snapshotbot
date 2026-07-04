@@ -569,7 +569,10 @@ function pill(name, tag){
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 // Actual card faces from the LCT mod (sb_card_images), shown inline — no links
 // to third-party rules sites. Missing image → plain pill via onerror.
-function cardKey(name){ return String(name).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function cardKey(name){
+  // leading articles vary between deck and played copies ("A Grievous Blow")
+  return String(name).toLowerCase().trim().replace(/^(a|an|the)\s+/, '').replace(/[^a-z0-9]/g, '');
+}
 function cardOrPill(name, tag){
   if (!name) return '<div class="card-pill empty">— none —</div>';
   const key = cardKey(name);
