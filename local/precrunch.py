@@ -49,9 +49,15 @@ def spec_of(o):
         spec |= {"child_mesh": curl, "child_rot": t.get("rotY", 0),
                  "child_x": t.get("posX", 0), "child_z": t.get("posZ", 0),
                  "child_scale": t.get("scaleX", 1)}
-    # identity = child sculpt when present (discs are shared across models)
-    key = re.search(r"/ugc/(\d+)/", curl or cm["MeshURL"])
-    return (key.group(1), spec) if key else (None, None)
+    # identity = the assembly (parent disc + child sculpt): discs are shared across
+    # models AND sculpt files are reused at other scales (ForceOrg's Storm Speeder
+    # is a marine sculpt at 3.9x on a 90mm disc)
+    pid = re.search(r"/ugc/(\d+)/", cm["MeshURL"])
+    if not pid:
+        return None, None
+    cid = re.search(r"/ugc/(\d+)/", spec["child_mesh"]) if spec.get("child_mesh") else None
+    key = pid.group(1) + ("-" + cid.group(1) if cid else "")
+    return key, spec
 
 
 def extract_specs(path):

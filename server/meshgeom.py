@@ -78,6 +78,9 @@ def _triangles(spec, fetch=_fetch):
     pv, pf = _parse_obj(fetch(spec["mesh"]))
     tris = [tuple((-pv[i][0], pv[i][2]) for i in t) for t in pf]
     base = _base_size(pv)
+    # A disc parent is a true measured base; a bottom slice of a single-mesh sculpt
+    # is a guess (poses spread low geometry) — the viewer ranks it below the guide.
+    base["disc"] = bool(spec.get("child_mesh"))
     if spec.get("child_mesh"):
         cv, cf = _parse_obj(fetch(spec["child_mesh"]))
         ry = math.radians(spec.get("child_rot") or 0)

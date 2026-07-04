@@ -255,9 +255,10 @@ function guideBase(name){
 // it's the actual base on the actual table.
 const GEOM = {};
 let geomVersion = 0, geomRetries = 0;
-function measuredBase(m){
+function measuredBase(m, discOnly){
   const g = m.g && GEOM[m.g];
   if (!g || !g.base) return null;
+  if (discOnly && !g.base.disc) return null;   // slice-measured guess ranks below guide
   const b = g.base.d != null ? g.base.d : g.base.wh;
   return {in: b, mm: Array.isArray(b) ? [Math.round(b[0]*25.4), Math.round(b[1]*25.4)]
                                       : Math.round(b*25.4)};
@@ -326,7 +327,7 @@ function resolveModels(fr){
   const unit = {};
   for (const m of fr.models || []){
     if (m.u && !unit[m.u]){
-      const g = measuredBase(m) || guideBase(m.n);
+      const g = measuredBase(m, true) || guideBase(m.n);
       if (g && !g.hull) unit[m.u] = g;
     }
   }
@@ -335,7 +336,9 @@ function resolveModels(fr){
     // Hull vehicles (guide says "Hull") have no base: render silhouette/footprint
     // only; the measured bottom-slice still supplies dims for ruler + tooltip.
     m._hull = !!(gb && gb.hull);
-    m._g = measuredBase(m) || (gb && !gb.hull ? gb : null) || (m.u && unit[m.u]) || null;
+    // measured DISC > guide > squadmates > slice-measured guess > bounds
+    m._g = measuredBase(m, true) || (gb && !gb.hull ? gb : null)
+           || (m.u && unit[m.u]) || measuredBase(m, false) || null;
   }
 }
 

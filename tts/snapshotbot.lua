@@ -293,10 +293,11 @@ function unitId(obj)
     return nil
 end
 
--- Mesh key joins snapshots to the server's geometry cache. Identity = the CHILD
--- sculpt's ugc id when the model is a base-disc + sculpt assembly (the same disc
--- mesh is shared by many different models — ForceOrg reuses one 32mm disc for
--- entire factions), else the parent mesh id. Needs getData(), so cache per GUID:
+-- Mesh key joins snapshots to the server's geometry cache. Identity = the whole
+-- ASSEMBLY: parent disc id + child sculpt id ("p-c"), else parent id alone.
+-- Neither half is unique by itself: ForceOrg reuses one 32mm disc under entire
+-- factions AND reuses sculpt files across models (its Storm Speeder is a marine
+-- sculpt scaled 3.9x on a 90mm disc). Needs getData(), so cache per GUID:
 -- one serialization per model per session. Asset bundles have no mesh → nil.
 guidKey = guidKey or {}
 
@@ -310,9 +311,11 @@ function modelKey(obj)
     local key = nil
     local ok, dat = pcall(function() return obj.getData() end)
     if ok and dat and dat.CustomMesh and dat.CustomMesh.MeshURL then
+        local pid = string.match(dat.CustomMesh.MeshURL, "/ugc/(%d+)/")
         local ch = dat.ChildObjects and dat.ChildObjects[1]
         local curl = ch and ch.CustomMesh and ch.CustomMesh.MeshURL
-        key = string.match(curl or dat.CustomMesh.MeshURL, "/ugc/(%d+)/")
+        local cid = curl and string.match(curl, "/ugc/(%d+)/")
+        if pid then key = cid and (pid .. "-" .. cid) or pid end
     end
     guidKey[g] = key or false
     return key

@@ -12,7 +12,7 @@ api = Blueprint("api", __name__)
 _BUCKETS = {}
 _LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60, "geom": 30, "admin": 20}
 
-GEOM_KEY_RE = re.compile(r"^\d{1,25}$")
+GEOM_KEY_RE = re.compile(r"^\d{1,25}(-\d{1,25})?$")
 
 NOTE_KEYS = {"deployment", "round1", "round2", "round3", "round4", "round5",
              "army_red", "army_blue"}
