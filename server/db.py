@@ -268,9 +268,21 @@ def card_put(key, name, img):
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO sb_card_images (key, name, img) VALUES (%s, %s, %s)"
-            " ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, img = EXCLUDED.img",
+            " ON CONFLICT (key) DO UPDATE SET name = EXCLUDED.name, img = EXCLUDED.img,"
+            " created_at = now()",   # bumps the asset revision → viewer cache-busts
             (key, name, img),
         )
+
+
+def asset_revs():
+    # Cache-busting stamps: image URLs carry ?v=<rev>, so browsers can cache hard
+    # but any re-harvest/rebake changes every URL.
+    with get_conn() as conn:
+        c = conn.execute("SELECT extract(epoch FROM max(created_at))::bigint AS r"
+                         " FROM sb_card_images").fetchone()
+        g = conn.execute("SELECT extract(epoch FROM max(created_at))::bigint AS r"
+                         " FROM sb_mesh_geom").fetchone()
+        return (c["r"] or 0, g["r"] or 0)
 
 
 def card_get(key):
@@ -371,7 +383,7 @@ def geom_put_done(key, name, spec, base, png, meta, overwrite=False):
             " VALUES (%s, 'done', %s, %s, %s, %s, %s)"
             " ON CONFLICT (key) DO UPDATE SET status = 'done', name = EXCLUDED.name,"
             " spec = EXCLUDED.spec, base = EXCLUDED.base, sil_png = EXCLUDED.sil_png,"
-            " sil_meta = EXCLUDED.sil_meta, error = NULL" + guard,
+            " sil_meta = EXCLUDED.sil_meta, error = NULL, created_at = now()" + guard,
             (key, name, Jsonb(spec), Jsonb(base), png, Jsonb(meta)),
         )
 

@@ -84,6 +84,7 @@ def replay(slug):
         return "Unknown or expired session (replays keep for 30 days).", 404
     key = layout_key(bundle["mission_meta"])
     lay = layouts_meta().get(key) if key else None
+    cards_rev, geom_rev = db.asset_revs()
     return render_template(
         "replay.html",
         slug=slug,
@@ -91,6 +92,8 @@ def replay(slug):
         layout_meta_json=json.dumps(lay or {}, ensure_ascii=False),
         embedded_json=None,
         admin=is_admin(),
+        cards_rev=cards_rev,
+        geom_rev=geom_rev,
     )
 
 
@@ -143,6 +146,8 @@ def replay_download(slug):
         # </script> inside embedded strings would terminate the script tag
         embedded_json=json.dumps(embedded, ensure_ascii=False).replace("</", "<\\/"),
         admin=False,
+        cards_rev=0,
+        geom_rev=0,
     )
     date = bundle["started_at"][:10]
     return Response(html, mimetype="text/html", headers={

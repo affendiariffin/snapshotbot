@@ -179,14 +179,13 @@ def geom_status():
 
 
 def _etagged(data, mimetype):
-    # Content changes under stable keys (card re-harvests, silhouette rebakes), so
-    # long max-age poisons browsers for a day. ETag + no-cache = always a cheap
-    # 304 revalidation, instant propagation when bytes change.
+    # Image URLs carry a ?v=<revision> that changes on re-harvest/rebake, so long
+    # caching is safe; the ETag covers stragglers hitting unversioned URLs.
     etag = hashlib.md5(data).hexdigest()[:16]
     if request.headers.get("If-None-Match") == etag:
         return Response(status=304, headers={"ETag": etag})
     return Response(data, mimetype=mimetype,
-                    headers={"ETag": etag, "Cache-Control": "no-cache"})
+                    headers={"ETag": etag, "Cache-Control": "public, max-age=604800"})
 
 
 @api.get("/api/card/<key>.jpg")

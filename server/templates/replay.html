@@ -221,6 +221,9 @@ const SLUG = {{ slug | tojson }};
 const LAYOUT_KEY = {{ layout_key | tojson }};
 const LAYOUT_META = {{ layout_meta_json | safe }};
 const EMBEDDED = window.EMBEDDED_DATA;
+// cache-busting revisions: bump whenever card images / silhouettes change in the DB
+const CARDS_REV = {{ cards_rev or 0 }};
+const GEOM_REV = {{ geom_rev or 0 }};
 // Admin cookie holder: server-persisted edits (notes/army lists). Others read-only.
 const ADMIN = {{ 'true' if admin else 'false' }};
 
@@ -332,7 +335,7 @@ function requestGeom(){
       if (v && v.status === 'done' && v.sil_meta){
         const img = new Image();
         img.onload = () => draw();
-        img.src = '/api/geom/' + k + '.png';
+        img.src = '/api/geom/' + k + '.png?v=' + GEOM_REV;
         GEOM[k].img = img;
       }
     }
@@ -637,7 +640,7 @@ function cardOrPill(name, tag){
   const key = cardKey(name);
   const src = EMBEDDED
     ? ((EMBEDDED.cards || {})[key] ? 'data:image/jpeg;base64,' + EMBEDDED.cards[key] : null)
-    : '/api/card/' + key + '.jpg';
+    : '/api/card/' + key + '.jpg?v=' + CARDS_REV;
   if (!src) return pill(name, tag);
   return `<img class="mcard" loading="lazy" src="${src}" alt="${esc(name)}" title="${esc(name)}"
     data-name="${esc(name)}" data-tag="${tag || ''}" onclick="lightbox(this)" onerror="cardFail(this)">`;
