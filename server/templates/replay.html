@@ -902,6 +902,61 @@ function wireNotes(){
   }
 }
 
+/* ---------- derived army lists ---------- */
+// Prefill the army-list cells from the table itself: peak composition per
+// yellowscribe unit across all frames (reserves arriving late still count,
+// casualties don't shrink it), with the highest wound counter seen per model.
+// A saved or hand-edited list is never overwritten; until then live games keep
+// the prefill fresh as more of the opponent's army hits the table.
+const derivedArmy = {army_red: '', army_blue: ''};
+function deriveArmyList(team){
+  const comp = new Map();                 // unit key -> Map(name -> peak count)
+  const wounds = new Map();               // unit key|name -> max wounds seen
+  const order = [];
+  for (const f of FRAMES){
+    const frame = new Map();
+    for (const m of f.models || []){
+      if ((team ? m.t !== team : !!m.t) || !m.n) continue;
+      const uk = m.u ? 'u:' + m.u : 'n:' + m.n.toLowerCase();
+      let nm = frame.get(uk);
+      if (!nm) frame.set(uk, nm = new Map());
+      nm.set(m.n, (nm.get(m.n) || 0) + 1);
+      const wk = uk + '|' + m.n;
+      // w is the yellowscribe counter "cur/max" — the max half is the statline
+      const w = m.w ? parseInt(String(m.w).split('/').pop(), 10) || 0 : 0;
+      if (w > (wounds.get(wk) || 0)) wounds.set(wk, w);
+    }
+    for (const [uk, nm] of frame){
+      let tot = comp.get(uk);
+      if (!tot){ comp.set(uk, tot = new Map()); order.push(uk); }
+      for (const [name, cnt] of nm) if (cnt > (tot.get(name) || 0)) tot.set(name, cnt);
+    }
+  }
+  const lines = [];
+  for (const uk of order){
+    const parts = [];
+    for (const [name, cnt] of comp.get(uk)){
+      const w = wounds.get(uk + '|' + name);
+      parts.push((cnt > 1 ? cnt + 'x ' : '') + name + (w > 1 ? ' [' + w + 'W]' : ''));
+    }
+    lines.push(parts.join(' + '));
+  }
+  return lines.join('\n');
+}
+function applyDerivedArmy(){
+  // Units nobody has claimed yet (pre-token models never re-dropped) go in both
+  // cells behind a divider — better duplicated than silently missing.
+  const un = deriveArmyList(null);
+  for (const [k, team] of [['army_red', 'red'], ['army_blue', 'blue']]){
+    const ta = document.getElementById('note_' + k);
+    if (!ta) continue;
+    let txt = deriveArmyList(team);
+    if (un) txt += (txt ? '\n' : '') + '— unclaimed (either side) —\n' + un;
+    if (txt && (ta.value === '' || ta.value === derivedArmy[k])) ta.value = txt;
+    derivedArmy[k] = txt;
+  }
+}
+
 /* ---------- data load + live polling ---------- */
 function ingest(sess, first){
   META = sess.mission_meta || {};
@@ -927,6 +982,7 @@ function ingest(sess, first){
   }
   renderBookmarks();
   buildTimeStrip();
+  applyDerivedArmy();
   requestGeom();
   document.getElementById('liveBadge').classList.toggle('on', !ENDED);
   if (!ENDED) setTimeout(pollLive, 5000);
