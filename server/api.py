@@ -1,3 +1,4 @@
+import hashlib
 import hmac
 import os
 import re
@@ -177,6 +178,17 @@ def geom_status():
     return jsonify({"ok": True, "geom": db.geom_status(keys)})
 
 
+def _etagged(data, mimetype):
+    # Content changes under stable keys (card re-harvests, silhouette rebakes), so
+    # long max-age poisons browsers for a day. ETag + no-cache = always a cheap
+    # 304 revalidation, instant propagation when bytes change.
+    etag = hashlib.md5(data).hexdigest()[:16]
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status=304, headers={"ETag": etag})
+    return Response(data, mimetype=mimetype,
+                    headers={"ETag": etag, "Cache-Control": "no-cache"})
+
+
 @api.get("/api/card/<key>.jpg")
 def card_img(key):
     if not CARD_KEY_RE.match(key):
@@ -184,8 +196,7 @@ def card_img(key):
     img = db.card_get(key)
     if img is None:
         return _bad("no such card", 404)
-    return Response(img, mimetype="image/jpeg",
-                    headers={"Cache-Control": "public, max-age=86400"})
+    return _etagged(img, "image/jpeg")
 
 
 @api.get("/api/geom/<key>.png")
@@ -195,8 +206,7 @@ def geom_png(key):
     png = db.geom_png(key)
     if png is None:
         return _bad("not ready", 404)
-    return Response(png, mimetype="image/png",
-                    headers={"Cache-Control": "public, max-age=86400"})
+    return _etagged(png, "image/png")
 
 
 @api.post("/api/notes")
