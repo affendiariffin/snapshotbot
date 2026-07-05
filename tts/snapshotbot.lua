@@ -107,7 +107,11 @@ function postJson(path, body, cb)
         {["Content-Type"] = "application/json"},
         function(req)
             if req.is_error or req.response_code >= 400 then
-                if cb then cb(nil, "HTTP " .. tostring(req.response_code)) end
+                -- surface the server's reason ("at capacity ...") when it sent one
+                local why = "HTTP " .. tostring(req.response_code)
+                local okE, parsed = pcall(JSON.decode, req.text or "")
+                if okE and parsed and parsed.error then why = parsed.error end
+                if cb then cb(nil, why) end
                 return
             end
             local ok, parsed = pcall(JSON.decode, req.text)
@@ -603,7 +607,8 @@ function tryStartSession()
     postJson("/api/session/start", {mission_meta = ok and meta or {}}, function(resp, err)
         startPending = false
         if resp == nil or not resp.ok then
-            logError("session start failed (" .. tostring(err) .. ") — retrying later")
+            local why = (resp and resp.error) or err
+            logError("session start failed (" .. tostring(why) .. ") — retrying later")
             return
         end
         sessionSlug = resp.slug

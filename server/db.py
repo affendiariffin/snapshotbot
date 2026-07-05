@@ -105,6 +105,14 @@ def expire_old_sessions():
         return cur.rowcount
 
 
+def count_live_sessions():
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT count(*) AS c FROM sb_sessions WHERE ended_at IS NULL"
+        ).fetchone()
+        return row["c"]
+
+
 def create_session(meta):
     with get_conn() as conn:
         for _ in range(5):
@@ -114,9 +122,12 @@ def create_session(meta):
                     "INSERT INTO sb_sessions (slug, mission_meta) VALUES (%s, %s)",
                     (slug, Jsonb(meta)),
                 )
+                # Cap trim prefers finished games: a live recording never gets
+                # deleted out from under its token by newer session churn.
                 conn.execute(
                     "DELETE FROM sb_sessions WHERE id NOT IN"
-                    " (SELECT id FROM sb_sessions ORDER BY started_at DESC LIMIT %s)",
+                    " (SELECT id FROM sb_sessions"
+                    "  ORDER BY (ended_at IS NULL) DESC, started_at DESC LIMIT %s)",
                     (MAX_SESSIONS,),
                 )
                 return slug

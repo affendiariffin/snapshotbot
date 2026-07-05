@@ -133,18 +133,26 @@ def compute(spec, fetch=_fetch):
     return base, png, meta
 
 
+# The library is pre-crunched locally, so Railway only ever computes stragglers —
+# but several unfamiliar armies deploying at once (multi-table) could stack mesh
+# downloads + rasterizes. Two at a time keeps the CPU (= the bill) flat; the rest
+# of the threads just wait their turn.
+_COMPUTE_SLOTS = threading.BoundedSemaphore(2)
+
+
 def _process(key):
-    spec = db.geom_claim(key)
-    if spec is None:
-        return
-    try:
-        base, png, meta = compute(spec)
-        db.geom_finish(key, base, png, meta)
-        print(f"[geom] done key={key} name={spec.get('name')} "
-              f"base={base} png={len(png) // 1024}KB", flush=True)
-    except Exception as e:  # noqa: BLE001 — any failure just marks the row
-        db.geom_fail(key, str(e)[:500])
-        print(f"[geom] FAILED key={key} name={spec.get('name')}: {e}", flush=True)
+    with _COMPUTE_SLOTS:
+        spec = db.geom_claim(key)
+        if spec is None:
+            return
+        try:
+            base, png, meta = compute(spec)
+            db.geom_finish(key, base, png, meta)
+            print(f"[geom] done key={key} name={spec.get('name')} "
+                  f"base={base} png={len(png) // 1024}KB", flush=True)
+        except Exception as e:  # noqa: BLE001 — any failure just marks the row
+            db.geom_fail(key, str(e)[:500])
+            print(f"[geom] FAILED key={key} name={spec.get('name')}: {e}", flush=True)
 
 
 def enqueue(key, name, spec):

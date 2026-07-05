@@ -16,6 +16,11 @@ api = Blueprint("api", __name__)
 # (local dev); token-facing endpoints (snapshot/geom/log) stay open by design.
 ADMIN_KEY = os.environ.get("SB_ADMIN_KEY", "")
 
+# Concurrent-recording cap (Fendi, 2026-07-05: tokens will spread to friends'
+# tables, but the Railway bill is his). A token refused here retries every poll
+# and starts recording as soon as a table finishes.
+MAX_LIVE = int(os.environ.get("SB_MAX_LIVE", "3"))
+
 
 def is_admin():
     if not ADMIN_KEY:
@@ -60,6 +65,8 @@ def session_start():
         return _bad("mission_meta must be an object")
     db.expire_old_sessions()
     db.finalize_stale_sessions()
+    if db.count_live_sessions() >= MAX_LIVE:
+        return _bad(f"at capacity ({MAX_LIVE} games recording) — will retry", 429)
     slug = db.create_session(meta)
     return jsonify({"ok": True, "slug": slug, "path": "/r/" + slug})
 
