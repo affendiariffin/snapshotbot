@@ -971,7 +971,7 @@ function setPlaying(on){
     playTimer = setInterval(() => {
       if (cur >= FRAMES.length - 1) setPlaying(false);   // stop at the end, no loop
       else show(cur + 1);
-    }, 700);
+    }, 465);
   }
   else { clearInterval(playTimer); }
 }
