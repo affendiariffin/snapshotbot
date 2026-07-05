@@ -72,17 +72,20 @@ def snapshot():
     scores = body.get("scores") or {}
     cards = body.get("cards") or {}
     models = body.get("models") or []
+    markers = body.get("markers") or []
     mark = body.get("mark")
     round_ = body.get("round") or 0
     if not isinstance(scores, dict) or not isinstance(cards, dict) or not isinstance(models, list):
         return _bad("scores/cards must be objects, models must be a list")
+    if not isinstance(markers, list) or len(markers) > 100:
+        return _bad("bad markers")
     if len(models) > 500:
         return _bad("too many models")
     if mark is not None and (not isinstance(mark, str) or len(mark) > 100):
         return _bad("bad mark")
     if not isinstance(round_, int) or not 0 <= round_ <= 10:
         return _bad("bad round")
-    snap_id = db.add_snapshot(slug, round_, mark, scores, cards, models)
+    snap_id = db.add_snapshot(slug, round_, mark, scores, cards, models, markers)
     if snap_id is None:
         return _bad("unknown or ended session", 404)
     return jsonify({"ok": True, "snapshot_id": snap_id})

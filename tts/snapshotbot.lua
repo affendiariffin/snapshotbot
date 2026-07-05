@@ -63,7 +63,8 @@ sessionPath = sessionPath or nil
 lastSig = lastSig or nil
 lastPostAt = lastPostAt or 0
 startPending = startPending or false
-teamByGuid = teamByGuid or {}  -- sticky deployment-half fallback (GMNotes overrides)
+teamByGuid = teamByGuid or {}  -- sticky drop-claim ownership (GMNotes overrides)
+markerSide = markerSide or {}  -- status markers: which side's rack/hand placed them
 sentGeom = sentGeom or {}      -- mesh keys already posted this session
 geomQueue = geomQueue or {}    -- model GUIDs awaiting a one-time geometry post
 
@@ -274,12 +275,28 @@ end
 function onObjectDrop(playerColor, obj)
     if playerColor ~= "Red" and playerColor ~= "Blue" then return end
     local ok = pcall(function()
-        if obj ~= nil and not obj.isDestroyed() and isModelType(obj.name) then
-            local g = obj.getGUID()
-            if teamByGuid[g] == nil then
-                teamByGuid[g] = string.lower(playerColor)
-            end
+        if obj == nil or obj.isDestroyed() then return end
+        local g = obj.getGUID()
+        if isModelType(obj.name) then
+            if teamByGuid[g] == nil then teamByGuid[g] = string.lower(playerColor) end
+        elseif obj.name == "Custom_Token" then
+            if markerSide[g] == nil then markerSide[g] = string.lower(playerColor) end
         end
+    end)
+    return ok
+end
+
+-- Status markers are dispensed from per-side racks of infinite bags: leaving a
+-- container on red's half means red placed it. More precise than the drop claim,
+-- so it overwrites; the "(Red)"/"(Blue)" name suffix wins over both at read time.
+function onObjectLeaveContainer(container, obj)
+    local ok = pcall(function()
+        if obj == nil or obj.name ~= "Custom_Token" then return end
+        local redSign = redHalfSign()
+        if redSign == nil then return end
+        local cz = container.getPosition().z
+        if cz == 0 then return end
+        markerSide[obj.getGUID()] = ((cz >= 0 and 1 or -1) == redSign) and "red" or "blue"
     end)
     return ok
 end
@@ -376,11 +393,47 @@ function readTurn()
     return out
 end
 
+-- Status markers: unlocked Custom_Tokens on the mat. Side = "(Red)"/"(Blue)" name
+-- suffix > rack provenance / drop claim > nil (grey).
+MARKER_EXCLUDE = {"command points", "gain cp", "interactive"}
+
+function stripTags(s)
+    return string.gsub(string.gsub(string.gsub(s or "", "%[[^%]]-%]", ""), "^%s+", ""), "%s+$", "")
+end
+
+function markerTeam(obj, name)
+    local m = string.match(name, "%((Red)%)$") or string.match(name, "%((Blue)%)$")
+    if m then return string.lower(m) end
+    return markerSide[obj.getGUID()]
+end
+
 function readModels()
     local models = {}
+    local markers = {}
     local sigParts = {}
     local guids = {}
     for _, obj in ipairs(getAllObjects()) do
+        if obj.name == "Custom_Token" and not obj.getLock() then
+            local p = obj.getPosition()
+            if math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z then
+                local name = stripTags(obj.getName())
+                local lower = string.lower(name)
+                local excluded = name == ""
+                for _, s in ipairs(MARKER_EXCLUDE) do
+                    if string.find(lower, s, 1, true) then excluded = true end
+                end
+                if not excluded and #markers < 100 then
+                    local b = obj.getBoundsNormalized().size
+                    table.insert(sigParts, string.format("%s:%.1f:%.1f", obj.getGUID(), p.x, p.z))
+                    table.insert(markers, {
+                        n = name,
+                        x = round(p.x, 2), z = round(p.z, 2),
+                        b = {round(b.x, 1), round(b.z, 1)},
+                        t = markerTeam(obj, name),
+                    })
+                end
+            end
+        end
         if obj ~= self and not obj.getLock() and isModelType(obj.name) and not isExcluded(obj) then
             local p = obj.getPosition()
             if math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z then
@@ -422,7 +475,7 @@ function readModels()
         end
     end
     table.sort(sigParts)
-    return models, table.concat(sigParts, "|")
+    return models, table.concat(sigParts, "|"), markers
 end
 
 -- One-time geometry post per unique sculpt: ship the mesh URLs + child transform to
@@ -509,18 +562,23 @@ function tryStartSession()
     end)
 end
 
-function doSnapshot(markLabel, models)
+function doSnapshot(markLabel, models, markers)
     if sessionSlug == nil then return end
     local ok, body = pcall(function()
         local scores = readScores() or {}
         scores.turn = readTurn()  -- rides in the scores blob; no schema change
+        if models == nil then
+            local m, _, mk = readModels()
+            models, markers = m, mk
+        end
         return {
             slug = sessionSlug,
             round = readCounter(ROUND_COUNTER),
             mark = markLabel,
             scores = scores,
             cards = readCards(),
-            models = models or (readModels()),
+            models = models,
+            markers = markers or {},
         }
     end)
     if not ok then
@@ -563,13 +621,13 @@ function onPollTick()
         tryStartSession()
         return
     end
-    local ok, models, msig = pcall(readModels)
+    local ok, models, msig, markers = pcall(readModels)
     if not ok then return end
     local ok2, sig = pcall(computeSig, msig)
     if not ok2 then return end
     if sig ~= lastSig or (os.time() - lastPostAt) >= FORCE_POST_SECONDS then
         lastSig = sig
-        doSnapshot(nil, models)
+        doSnapshot(nil, models, markers)
     end
     pcall(pumpGeomQueue)
 end
@@ -606,7 +664,8 @@ function onDestroy()
 end
 
 function onSave()
-    return JSON.encode({slug = sessionSlug, path = sessionPath, teams = teamByGuid})
+    return JSON.encode({slug = sessionSlug, path = sessionPath, teams = teamByGuid,
+                        msides = markerSide})
 end
 
 function onLoad(saved)
@@ -616,6 +675,7 @@ function onLoad(saved)
             sessionSlug = st.slug
             sessionPath = st.path
             teamByGuid = st.teams or {}
+            markerSide = st.msides or {}
         end
     end
     -- No buttons, no Start/Stop/End — fully automatic by design: recording begins

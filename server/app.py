@@ -1,3 +1,4 @@
+import base64
 import hmac
 import json
 import os
@@ -121,9 +122,19 @@ def replay_download(slug):
                  for n in card_names}
     with open(os.path.join(app.static_folder, "card_names.json"), encoding="utf-8") as f:
         card_names_json = json.load(f)
+    marker_b64 = {}
+    for s in bundle["snapshots"]:
+        for m in s.get("markers") or []:
+            k = re.sub(r"[^a-z0-9]", "", (m.get("n") or "").lower())
+            if k and k not in marker_b64:
+                p = os.path.join(app.static_folder, "markers", k + ".png")
+                if os.path.exists(p):
+                    with open(p, "rb") as f:
+                        marker_b64[k] = base64.b64encode(f.read()).decode()
     embedded = {"session": bundle, "geom": db.geom_export(keys),
                 "layout_svg": layout_svg, "base_sizes": base_sizes,
-                "cards": db.cards_export(card_keys), "card_names": card_names_json}
+                "cards": db.cards_export(card_keys), "card_names": card_names_json,
+                "markers": marker_b64}
     html = render_template(
         "replay.html",
         slug=slug,

@@ -20,7 +20,10 @@
     padding:4px 12px;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase}
   .role-pill.admin{background:#2a2410;border:1px solid #6a5a20;color:var(--accent)}
   .role-pill.guest{background:var(--panel);border:1px solid var(--border);color:var(--muted)}
-  @media (max-width:700px){.home-btn,.role-pill{position:static;transform:none}}
+  .guest-dl{position:absolute;right:0;top:calc(50% + 22px);font-size:.72rem;color:var(--accent);
+    text-decoration:none;letter-spacing:.04em}
+  .guest-dl:hover{text-decoration:underline}
+  @media (max-width:700px){.home-btn,.role-pill,.guest-dl{position:static;transform:none}}
   .header h1{font-size:1.3rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
   .header h1 a{color:inherit;text-decoration:none}
   .header .sub{font-size:.75rem;color:var(--muted);margin-top:2px}
@@ -403,6 +406,38 @@ function modelBase(m){
   return Array.isArray(m.b) ? m.b : (typeof m.b === 'number' ? m.b : 1.26);
 }
 
+// Status markers (Battle Shocked, +1 to Rolls, Objective Secured, ...): the real
+// LCT token art, bordered dark red / dark blue by which side placed it.
+const MARKER_IMGS = {};
+function markerKey(n){ return String(n).toLowerCase().replace(/[^a-z0-9]/g, ''); }
+function markerImg(n){
+  const k = markerKey(n);
+  if (k in MARKER_IMGS) return MARKER_IMGS[k];
+  if (EMBEDDED){
+    const b64 = (EMBEDDED.markers || {})[k];
+    if (!b64) return MARKER_IMGS[k] = null;
+    const img = new Image();
+    img.onload = () => draw();
+    img.src = 'data:image/png;base64,' + b64;
+    return MARKER_IMGS[k] = img;
+  }
+  const img = new Image();
+  img.onload = () => draw();
+  img.onerror = () => { MARKER_IMGS[k] = null; };
+  img.src = '/static/markers/' + k + '.png';
+  return MARKER_IMGS[k] = img;
+}
+function markerDims(mk){
+  return [Array.isArray(mk.b) ? mk.b[0] : 0.9, Array.isArray(mk.b) ? mk.b[1] : 0.9];
+}
+function hitMarker(wx, wz){
+  for (const mk of (FRAMES[cur] && FRAMES[cur].markers) || []){
+    const [w, h] = markerDims(mk);
+    if (Math.abs(wx - mk.x) <= w / 2 && Math.abs(wz - mk.z) <= h / 2) return mk;
+  }
+  return null;
+}
+
 function draw(){
   resolveModels(FRAMES[cur]);
   ctx.clearRect(0, 0, cv.width, cv.height);
@@ -454,6 +489,18 @@ function draw(){
       ctx.strokeStyle = ring; ctx.lineWidth = 1.5; ctx.stroke();
     }
     ctx.restore();
+  }
+
+  for (const mk of (FRAMES[cur] && FRAMES[cur].markers) || []){
+    const [mx, my] = W2S(mk.x, mk.z);
+    const [dw, dh] = markerDims(mk);
+    const w = dw * cam.scale, h = dh * cam.scale;
+    const img = markerImg(mk.n);
+    if (img && img.complete && img.naturalWidth) ctx.drawImage(img, mx - w / 2, my - h / 2, w, h);
+    else { ctx.fillStyle = '#3a3f4c'; ctx.fillRect(mx - w / 2, my - h / 2, w, h); }
+    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = mk.t === 'red' ? '#8c1d1d' : mk.t === 'blue' ? '#1d3a8c' : '#5a6080';
+    ctx.strokeRect(mx - w / 2, my - h / 2, w, h);
   }
 
   for (const st of (strokes[cur] || [])){
@@ -539,7 +586,16 @@ cv.addEventListener('mousemove', e => {
     if (m.w) bl += ' · ' + m.w + ' W';
     const col = m.t === 'red' ? '#e05555' : m.t === 'blue' ? '#5588e0' : '#9aa2b5';
     tip.innerHTML = '<b style="color:' + col + '">' + (m.n || 'model') + '</b><br><span style="color:#5a6080">' + bl + '</span>';
-  } else tip.style.display = 'none';
+  } else {
+    const mk = hitMarker(wx, wz);
+    if (mk){
+      tip.style.display = 'block';
+      tip.style.left = (e.offsetX + 14) + 'px'; tip.style.top = (e.offsetY + 8) + 'px';
+      const col = mk.t === 'red' ? '#e05555' : mk.t === 'blue' ? '#5588e0' : '#9aa2b5';
+      tip.innerHTML = '<b style="color:' + col + '">' + esc(mk.n) + '</b>' +
+        (mk.t ? '<br><span style="color:#5a6080">placed by ' + mk.t + '</span>' : '');
+    } else tip.style.display = 'none';
+  }
 });
 cv.addEventListener('mouseup', () => { rulerDown = false; doodling = false; curStroke = null; });
 cv.addEventListener('mouseleave', () => { rulerDown = false; doodling = false; curStroke = null; tip.style.display = 'none'; });
@@ -912,7 +968,17 @@ if (EMBEDDED){
   document.getElementById('homeBtn').style.display = 'none';   // no server to go home to
   const rp = document.getElementById('rolePill');
   rp.className = 'role-pill guest'; rp.textContent = 'Offline copy';
-} else document.getElementById('dlLink').href = '/r/' + SLUG + '/download';
+} else {
+  document.getElementById('dlLink').href = '/r/' + SLUG + '/download';
+  if (!ADMIN){
+    // guests are read-only on the server — steer them to the editable offline copy
+    const a = document.createElement('a');
+    a.className = 'guest-dl';
+    a.href = '/r/' + SLUG + '/download';
+    a.innerHTML = '&#8681; download to edit';
+    document.querySelector('.header').appendChild(a);
+  }
+}
 
 new ResizeObserver(fitView).observe(wrap);
 fitView();

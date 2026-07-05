@@ -86,6 +86,8 @@ def init_db():
     with get_conn() as conn:
         conn.execute(SCHEMA)
         conn.execute("ALTER TABLE sb_sessions ADD COLUMN IF NOT EXISTS title TEXT")
+        conn.execute("ALTER TABLE sb_snapshots ADD COLUMN IF NOT EXISTS"
+                     " markers JSONB NOT NULL DEFAULT '[]'::jsonb")
     expire_old_sessions()
     finalize_stale_sessions()
 
@@ -161,7 +163,7 @@ def _session_id(conn, slug, open_only=False):
     return row["id"] if row else None
 
 
-def add_snapshot(slug, round_, mark, scores, cards, models):
+def add_snapshot(slug, round_, mark, scores, cards, models, markers=None):
     # A snapshot for a sealed session reopens it: the seal only means "currently
     # silent", so a returning token (blip recovered, save reloaded) resumes recording.
     with get_conn() as conn:
@@ -170,9 +172,10 @@ def add_snapshot(slug, round_, mark, scores, cards, models):
             return None
         conn.execute("UPDATE sb_sessions SET ended_at = NULL WHERE id = %s", (sid,))
         row = conn.execute(
-            "INSERT INTO sb_snapshots (session_id, round, mark, scores, cards, models)"
-            " VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-            (sid, round_, mark, Jsonb(scores), Jsonb(cards), Jsonb(models)),
+            "INSERT INTO sb_snapshots (session_id, round, mark, scores, cards, models,"
+            " markers) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (sid, round_, mark, Jsonb(scores), Jsonb(cards), Jsonb(models),
+             Jsonb(markers or [])),
         ).fetchone()
         return row["id"]
 
@@ -206,8 +209,8 @@ def get_session_bundle(slug, after_id=0):
         if sess is None:
             return None
         snaps = conn.execute(
-            "SELECT id, taken_at, round, mark, scores, cards, models FROM sb_snapshots"
-            " WHERE session_id = %s AND id > %s ORDER BY id",
+            "SELECT id, taken_at, round, mark, scores, cards, models, markers"
+            " FROM sb_snapshots WHERE session_id = %s AND id > %s ORDER BY id",
             (sess["id"], after_id),
         ).fetchall()
         notes = conn.execute(
@@ -228,6 +231,7 @@ def get_session_bundle(slug, after_id=0):
                     "scores": s["scores"],
                     "cards": s["cards"],
                     "models": s["models"],
+                    "markers": s["markers"],
                 }
                 for s in snaps
             ],
