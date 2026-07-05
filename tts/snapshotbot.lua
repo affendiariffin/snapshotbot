@@ -35,6 +35,14 @@ CARD_ZONES = {
 -- Start Menu's dispositionValues order (index vars point into this).
 DISPOSITION_VALUES = {"Disruption", "Priority Assets", "Purge the Foe", "Reconnaissance", "Take and Hold"}
 
+-- The mod's OWN active-secondary registry: 3DText per tableau slot, refreshed by
+-- Global on every draw/discard/recycle. Authoritative — discarded and recycled
+-- cards drop out instantly, unlike anything inferred from card positions.
+SEC_NAME_GUIDS = {
+    red = {"5423ba", "5423bb", "5423bc", "5423bd", "5423be"},
+    blue = {"5423a5", "5423a6", "5423a7", "5423a8", "5423a9"},
+}
+
 -- Model capture: unlocked minis on the mat. LCT spawns terrain Locked, and dice/
 -- cards/tokens have other internal types, so type+lock filters almost everything;
 -- the exclusion list catches loose clutter by nickname substring (lowercase).
@@ -148,6 +156,21 @@ function readScores()
     return out
 end
 
+function readSecNames(side)
+    local names = {}
+    for _, g in ipairs(SEC_NAME_GUIDS[side]) do
+        local o = getObjectFromGUID(g)
+        if o ~= nil then
+            local ok, v = pcall(function() return o.getValue() end)
+            if ok and type(v) == "string" then
+                v = string.gsub(string.gsub(v, "^%s+", ""), "%s+$", "")
+                if #v > 2 then table.insert(names, v) end
+            end
+        end
+    end
+    return names
+end
+
 function readCards()
     local cards = {}
     for key, guids in pairs(CARD_ZONES) do
@@ -163,6 +186,9 @@ function readCards()
         end
         cards[key] = names
     end
+    -- Active secondaries from the mod's registry override the (dead) legacy zones.
+    cards.red_secondary = readSecNames("red")
+    cards.blue_secondary = readSecNames("blue")
     -- LCT's newer SEC tableau boards don't overlap the legacy ScriptingTriggers,
     -- so also capture every loose face-up card (name + position + table half);
     -- the viewer classifies primary/secondary by name. Cards in players' HANDS
@@ -523,10 +549,11 @@ function computeSig(modelsSig)
     local sheet = findObj(SCORESHEET)
     local sheetState = (sheet and sheet.script_state) or ""
     local turn = readTurn()
-    return string.format("%s|%d|%d|%d|%d|%d|%s|%s", sheetState,
+    return string.format("%s|%d|%d|%d|%d|%d|%s|%s|%s|%s", sheetState,
         readCounter(ROUND_COUNTER), readCounter(TURN_COUNTERS.red), readCounter(TURN_COUNTERS.blue),
         readCounter(CP_COUNTERS.red), readCounter(CP_COUNTERS.blue),
         turn and (turn.active .. (turn.phase or "")) or "",
+        table.concat(readSecNames("red"), ","), table.concat(readSecNames("blue"), ","),
         modelsSig or "")
 end
 
