@@ -126,12 +126,130 @@ def _flip_sign(bundle, key):
 
 _thumb_cache = {}
 
-TEAM_FILL = {"red": (224, 85, 85), "blue": (85, 136, 224), None: (110, 116, 148)}
+TEAM_RING = {"red": (224, 85, 85), "blue": (85, 136, 224), None: (154, 162, 181)}
+TEAM_BODY = {"red": (110, 26, 26), "blue": (20, 41, 82), None: (58, 63, 76)}
+
+# ---- server-side port of the viewer's base guide + silhouette pipeline, so the
+# ---- Discord thumbnail shows the same tinted shapes as the replay board
+
+_base_guide = None
+
+
+def _norm_name(s):
+    s = re.sub(r"[^a-z0-9' ]+", " ", str(s).lower().replace("’", "'"))
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def base_guide():
+    global _base_guide
+    if _base_guide is None:
+        with open(os.path.join(app.static_folder, "base_sizes.json"), encoding="utf-8") as f:
+            d = json.load(f)
+        exact = {}
+        for units in d["units_mm"].values():
+            for name, size in units.items():
+                if size == "flying-large":
+                    size = 60
+                elif size == "flying-small":
+                    size = 32
+                elif size == "unique":
+                    size = "hull"
+                exact[_norm_name(name)] = size
+        _base_guide = (exact, sorted(exact, key=len, reverse=True))
+    return _base_guide
+
+
+def _guide_base(name):
+    # mirrors the viewer: exact > +/-s plural > containment > prefix; mm -> inches
+    if not name:
+        return None
+    exact, keys = base_guide()
+    key = _norm_name(name)
+    mm = exact.get(key) or exact.get(key + "s") or exact.get(key.rstrip("s"))
+    if mm is None:
+        mm = next((exact[k] for k in keys if len(k) >= 5 and k in key), None)
+    if mm is None and len(key) >= 5:
+        for k in keys:
+            if k.startswith(key + " "):
+                mm = exact[k]
+    if mm is None:
+        return None
+    return "hull" if mm == "hull" else (
+        [mm[0] / 25.4, mm[1] / 25.4] if isinstance(mm, list) else mm / 25.4)
+
+
+def _measured_base(m, geom, disc_only):
+    g = geom.get(m.get("g")) or {}
+    b = g.get("base") or {}
+    if not b or (disc_only and not b.get("disc")):
+        return None
+    return b["d"] if b.get("d") is not None else b.get("wh")
+
+
+def _model_base(m, geom, unit):
+    # measured disc > guide > squadmate inheritance > slice-measured > bounds
+    gb = _guide_base(m.get("n"))
+    if gb == "hull":
+        return None, True
+    base = (_measured_base(m, geom, True) or gb or unit.get(m.get("u"))
+            or _measured_base(m, geom, False) or m.get("b") or 1.26)
+    return base, False
+
+
+def _tinted_sil(g, team, k):
+    sil = Image.open(io.BytesIO(base64.b64decode(g["png_b64"]))).convert("RGBA")
+    out = Image.new("RGBA", sil.size, TEAM_RING.get(team, TEAM_RING[None]))
+    out.putalpha(sil.getchannel("A").point(lambda v: int(v * 0.95)))
+    return out.resize((max(int(sil.width * k), 1), max(int(sil.height * k), 1)),
+                      Image.LANCZOS)
+
+
+def _draw_model(board, m, geom, unit, ppi, f):
+    team = m.get("t") if m.get("t") in ("red", "blue") else None
+    sc = m.get("s") or 1
+    base, hull = _model_base(m, geom, unit)
+    g = geom.get(m.get("g")) or {}
+    meta = g.get("sil_meta")
+    has_sil = bool(meta and g.get("png_b64"))
+    bw = (base[0] if isinstance(base, list) else base or 0) * sc * ppi
+    bh = (base[1] if isinstance(base, list) else base or 0) * sc * ppi
+    ext = [bw / 2, bh / 2]
+    if has_sil:
+        k = ppi / meta["ppi"] * sc
+        sil = _tinted_sil(g, team, k)
+        ax, ay = meta["ox"] * k, meta["oy"] * k
+        ext += [ax, ay, sil.width - ax, sil.height - ay]
+    size = int(2 * max(ext + [4])) + 6
+    c = size / 2
+    tile = Image.new("RGBA", (size, size))
+    td = ImageDraw.Draw(tile)
+    if not hull and base:
+        td.ellipse([c - bw / 2, c - bh / 2, c + bw / 2, c + bh / 2],
+                   fill=TEAM_BODY.get(team, TEAM_BODY[None]),
+                   outline=TEAM_RING.get(team, TEAM_RING[None]), width=2)
+    elif hull and not has_sil and m.get("b"):
+        b = m["b"]
+        w = (b[0] if isinstance(b, list) else b) * sc * ppi
+        h = (b[1] if isinstance(b, list) else b) * sc * ppi
+        td.rounded_rectangle([c - w / 2, c - h / 2, c + w / 2, c + h / 2],
+                             radius=min(w, h) * 0.18,
+                             fill=TEAM_BODY.get(team, TEAM_BODY[None]),
+                             outline=TEAM_RING.get(team, TEAM_RING[None]), width=2)
+    if has_sil:
+        tile.alpha_composite(sil, (int(c - ax), int(c - ay)))
+    ang = (m.get("r") or 0) + (180 if f < 0 else 0)
+    if ang % 360:
+        # canvas rotate(+r) is clockwise on screen; PIL rotates counter-clockwise
+        tile = tile.rotate(-ang, resample=Image.BILINEAR)
+    cx = board.width / 2 + f * m["x"] * ppi
+    cy = board.height / 2 - f * m["z"] * ppi
+    board.paste(tile, (int(cx - c), int(cy - c)), tile)
 
 
 @app.get("/r/<slug>/thumb.png")
 def replay_thumb(slug):
-    # Link-preview image: the layout base render + team dots at end of deployment.
+    # Link-preview image: the layout base render + the board at the start of the
+    # first player turn, models drawn with their real tinted silhouettes.
     bundle = db.get_session_bundle(slug)
     if bundle is None:
         return "unknown session", 404
@@ -139,28 +257,26 @@ def replay_thumb(slug):
     base_path = os.path.join(app.static_folder, "layouts", "png", f"{key}.png")
     if not key or not os.path.exists(base_path) or not bundle["snapshots"]:
         return redirect("/static/og-banner.png")
-    # the board at the start of the first player turn (fall back to newest available)
     frame = next((s for s in bundle["snapshots"] if (s.get("round") or 0) >= 1),
                  bundle["snapshots"][-1])
-    ck = (slug, frame["id"])
+    models = [m for m in frame.get("models") or [] if not m.get("v")]
+    geom = db.geom_export({m["g"] for m in models if m.get("g")})
+    ck = (slug, frame["id"], len(geom))   # re-render once late silhouettes land
     if ck not in _thumb_cache:
         f = _flip_sign(bundle, key)
-        img = Image.open(base_path).convert("RGB")
-        d = ImageDraw.Draw(img)
-        ppi = img.width / 60  # 60x44 inch board
-        for m in frame.get("models") or []:
-            if m.get("v"):
-                continue
-            b = m.get("b")
-            w = (b[0] if isinstance(b, list) else b) or 1.26
-            r = max(min(w / 2 * ppi, 20), 3)
-            cx = img.width / 2 + f * m["x"] * ppi
-            cy = img.height / 2 - f * m["z"] * ppi
-            fill = TEAM_FILL.get(m.get("t"), TEAM_FILL[None])
-            line = tuple(min(c + 60, 255) for c in fill)
-            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill, outline=line, width=2)
+        board = Image.open(base_path).convert("RGB")
+        ppi = board.width / 60  # 60x44 inch board
+        unit = {}
+        for m in models:
+            u = m.get("u")
+            if u and u not in unit:
+                b = _measured_base(m, geom, True) or _guide_base(m.get("n"))
+                if b and b != "hull":
+                    unit[u] = b
+        for m in models:
+            _draw_model(board, m, geom, unit, ppi, f)
         buf = io.BytesIO()
-        img.save(buf, format="PNG")
+        board.save(buf, format="PNG")
         if len(_thumb_cache) > 20:
             _thumb_cache.clear()
         _thumb_cache[ck] = buf.getvalue()
