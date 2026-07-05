@@ -1,6 +1,7 @@
 # Inject snapshotbot.lua into the "Snapshotbot V2" Saved Object (Fendi's own vessel,
 # saved from TTS — the cosmetics are his; we only own the script, name, description).
 # Run after any Lua change, then respawn the token in TTS from Objects > Saved Objects.
+# Also refreshes the copy the home page serves for friends to download — commit it.
 import json
 import os
 
@@ -8,6 +9,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.expanduser(
     "~/Documents/My Games/Tabletop Simulator/Saves/Saved Objects/Tools/Snapshotbot V2.json"
 )
+WEB = os.path.join(HERE, "..", "server", "static", "snapshotbot-v2.json")
 
 with open(os.path.join(HERE, "snapshotbot.lua"), encoding="utf-8") as f:
     lua = f.read()
@@ -29,3 +31,7 @@ obj["LuaScriptState"] = ""
 with open(OUT, "w", encoding="utf-8") as f:
     json.dump(token, f, indent=2, ensure_ascii=False)
 print("written", OUT)
+
+with open(WEB, "w", encoding="utf-8") as f:
+    json.dump(token, f, indent=2, ensure_ascii=False)
+print("written", WEB)

@@ -50,6 +50,20 @@
   .confirm-pop .yes:hover{background:#2a1418}
   .confirm-pop .no:hover{color:var(--text);border-color:var(--accent)}
   .empty{color:var(--muted);text-align:center;padding:40px 0;font-style:italic}
+  .howto{background:var(--panel);border:1px solid var(--border);border-radius:8px;
+    padding:16px 20px;margin-top:26px;font-size:.85rem;line-height:1.55}
+  .howto-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    flex-wrap:wrap;margin-bottom:10px}
+  .howto-head span{font-size:.78rem;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+  .dl-token{background:var(--card);border:1px solid var(--accent);color:var(--accent);
+    border-radius:5px;padding:7px 14px;font-size:.82rem;text-decoration:none;line-height:1}
+  .dl-token:hover{background:#2a2410}
+  .howto ol{margin-left:20px;color:var(--text)}
+  .howto li{margin-bottom:5px}
+  .howto li b{color:var(--accent);font-weight:600}
+  .howto code{background:var(--card);border:1px solid var(--border);border-radius:4px;
+    padding:1px 6px;font-size:.78rem;color:var(--text)}
+  .howto-note{color:var(--muted);font-size:.78rem;margin-top:8px}
   .credits{font-size:.7rem;color:var(--muted);text-align:center;margin-top:26px}
   .credits a{color:var(--muted)}
   @media (max-width:600px){.session{flex-wrap:wrap}.acts{width:100%;justify-content:flex-end}}
@@ -89,6 +103,19 @@
 {% else %}
 <div class="empty">No games in the last 30 days — drop the Snapshotbot token on an LCT table.</div>
 {% endfor %}
+<div class="howto">
+  <div class="howto-head">
+    <span>Record your own games</span>
+    <a class="dl-token" href="/static/snapshotbot-v2.json" download="Snapshotbot V2.json">&#8681; Download the token</a>
+  </div>
+  <ol>
+    <li><b>Install</b> — put the file in <code>Documents\My Games\Tabletop Simulator\Saves\Saved Objects</code> (any subfolder is fine).</li>
+    <li><b>Spawn</b> — on an LCT table, the <b>host</b> loads it via Objects &rarr; Saved Objects and drops it anywhere. No setup, no buttons.</li>
+    <li><b>Play</b> — the token finds the table and posts your replay link in chat (and a Notebook tab) within seconds, then records the whole game by itself. Open the link mid-game for a live scoreboard.</li>
+    <li><b>Keep</b> — finished games appear on this page for 30 days (newest 10 kept); use <b>download</b> on any game for a permanent offline copy that works without this site.</li>
+  </ol>
+  <div class="howto-note">Records up to 3 tables at once — if it's at capacity the token says so in chat and keeps retrying by itself.</div>
+</div>
 <div class="credits">
   board renders: <a href="https://rapidingress.com" target="_blank">rapidingress.com</a> ·
   mission rules: <a href="https://gdmissions.app/11th" target="_blank">gdmissions.app</a>
