@@ -839,7 +839,15 @@ function renderBookmarks(){
   });
 }
 /* ---------- turn clock: red / blue / global timelines from game state ---------- */
-const MAX_GAP_MS = 5 * 60 * 1000;   // never attribute a long dead gap to a player
+// Heartbeat frames are deduped server-side, so a long gap between frames means the
+// state sat unchanged — that IS the active player's thinking time, count it all.
+// Gaps that end in a resumed frame are away-from-table breaks (session sealed and
+// reopened): count zero. The cap is only a safety net for pathological cases.
+const MAX_GAP_MS = 30 * 60 * 1000;
+function gapMs(i){
+  if (FRAMES[i + 1].resumed) return 0;
+  return Math.min(Date.parse(FRAMES[i + 1].taken_at) - Date.parse(FRAMES[i].taken_at), MAX_GAP_MS);
+}
 function frameTurn(f){ return (f.scores && f.scores.turn && f.scores.turn.active) || null; }
 function buildTimeStrip(){
   if (FRAMES.length < 2 || !FRAMES.some(frameTurn)) return;
@@ -850,7 +858,7 @@ function buildTimeStrip(){
   const span = Math.max(Date.parse(FRAMES[FRAMES.length - 1].taken_at) - t0, 1);
   for (let i = 0; i < FRAMES.length - 1; i++){
     const a = Date.parse(FRAMES[i].taken_at), b = Date.parse(FRAMES[i + 1].taken_at);
-    const who = frameTurn(FRAMES[i]);
+    const who = FRAMES[i + 1].resumed ? null : frameTurn(FRAMES[i]);   // break = grey
     const seg = document.createElement('div');
     seg.className = 'ts-seg';
     seg.style.left = ((a - t0) / span * 100) + '%';
@@ -887,7 +895,7 @@ function updateClocks(){
   if (FRAMES.length < 2 || document.getElementById('timeRow').style.display === 'none') return;
   let red = 0, blue = 0, tot = 0;
   for (let i = 0; i < cur; i++){
-    const dt = Math.min(Date.parse(FRAMES[i + 1].taken_at) - Date.parse(FRAMES[i].taken_at), MAX_GAP_MS);
+    const dt = gapMs(i);
     tot += dt;
     const who = frameTurn(FRAMES[i]);
     if (who === 'red') red += dt; else if (who === 'blue') blue += dt;

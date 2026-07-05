@@ -88,6 +88,9 @@ def init_db():
         conn.execute("ALTER TABLE sb_sessions ADD COLUMN IF NOT EXISTS title TEXT")
         conn.execute("ALTER TABLE sb_snapshots ADD COLUMN IF NOT EXISTS"
                      " markers JSONB NOT NULL DEFAULT '[]'::jsonb")
+        conn.execute("ALTER TABLE sb_sessions ADD COLUMN IF NOT EXISTS last_beat_at TIMESTAMPTZ")
+        conn.execute("ALTER TABLE sb_snapshots ADD COLUMN IF NOT EXISTS"
+                     " resumed BOOLEAN NOT NULL DEFAULT FALSE")
     expire_old_sessions()
     finalize_stale_sessions()
 
@@ -166,33 +169,57 @@ def _session_id(conn, slug, open_only=False):
 def add_snapshot(slug, round_, mark, scores, cards, models, markers=None):
     # A snapshot for a sealed session reopens it: the seal only means "currently
     # silent", so a returning token (blip recovered, save reloaded) resumes recording.
+    # Identical-state posts are the token's 60s liveness heartbeat: they refresh
+    # last_beat_at (keeps the 90s seal at bay) but store NO row — long games are
+    # mostly thinking time and would otherwise be mostly duplicate frames. A post
+    # that reopens a sealed session always stores, flagged resumed=true, so the
+    # viewer's turn clocks can zero the away-from-table gap.
     with get_conn() as conn:
-        sid = _session_id(conn, slug)
-        if sid is None:
+        sess = conn.execute(
+            "SELECT id, ended_at FROM sb_sessions WHERE slug = %s", (slug,)
+        ).fetchone()
+        if sess is None:
             return None
-        conn.execute("UPDATE sb_sessions SET ended_at = NULL WHERE id = %s", (sid,))
+        sid, was_sealed = sess["id"], sess["ended_at"] is not None
+        conn.execute(
+            "UPDATE sb_sessions SET ended_at = NULL, last_beat_at = now() WHERE id = %s",
+            (sid,),
+        )
+        last = conn.execute(
+            "SELECT id, round, mark, scores, cards, models, markers FROM sb_snapshots"
+            " WHERE session_id = %s ORDER BY id DESC LIMIT 1",
+            (sid,),
+        ).fetchone()
+        if (last is not None and mark is None and not was_sealed
+                and last["round"] == round_ and last["scores"] == scores
+                and last["cards"] == cards and last["models"] == models
+                and last["markers"] == (markers or [])):
+            return last["id"]
         row = conn.execute(
             "INSERT INTO sb_snapshots (session_id, round, mark, scores, cards, models,"
-            " markers) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            " markers, resumed) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (sid, round_, mark, Jsonb(scores), Jsonb(cards), Jsonb(models),
-             Jsonb(markers or [])),
+             Jsonb(markers or []), was_sealed and last is not None),
         ).fetchone()
         return row["id"]
 
 
 def finalize_stale_sessions():
-    # Seal open sessions whose last activity is older than the stale window; ended_at
-    # becomes the last snapshot time (or started_at for empty sessions).
+    # Seal open sessions whose last activity is older than the stale window. Since
+    # heartbeats no longer store rows, activity = last_beat_at (or last snapshot for
+    # pre-dedupe sessions); ended_at = when the players actually left.
     with get_conn() as conn:
         cur = conn.execute(
             """
-            UPDATE sb_sessions s SET ended_at = COALESCE(
-                (SELECT max(taken_at) FROM sb_snapshots WHERE session_id = s.id),
-                s.started_at)
+            UPDATE sb_sessions s SET ended_at = GREATEST(
+                COALESCE((SELECT max(taken_at) FROM sb_snapshots WHERE session_id = s.id),
+                         s.started_at),
+                COALESCE(s.last_beat_at, s.started_at))
             WHERE s.ended_at IS NULL
-              AND COALESCE(
-                (SELECT max(taken_at) FROM sb_snapshots WHERE session_id = s.id),
-                s.started_at) < now() - make_interval(secs => %s)
+              AND GREATEST(
+                COALESCE((SELECT max(taken_at) FROM sb_snapshots WHERE session_id = s.id),
+                         s.started_at),
+                COALESCE(s.last_beat_at, s.started_at)) < now() - make_interval(secs => %s)
             """,
             (STALE_SECONDS,),
         )
@@ -209,7 +236,7 @@ def get_session_bundle(slug, after_id=0):
         if sess is None:
             return None
         snaps = conn.execute(
-            "SELECT id, taken_at, round, mark, scores, cards, models, markers"
+            "SELECT id, taken_at, round, mark, scores, cards, models, markers, resumed"
             " FROM sb_snapshots WHERE session_id = %s AND id > %s ORDER BY id",
             (sess["id"], after_id),
         ).fetchall()
@@ -232,6 +259,7 @@ def get_session_bundle(slug, after_id=0):
                     "cards": s["cards"],
                     "models": s["models"],
                     "markers": s["markers"],
+                    "resumed": s["resumed"],
                 }
                 for s in snaps
             ],
