@@ -42,22 +42,42 @@ def walk(o):
         yield from walk(c)
 
 
+# The mod still carries 10e Leviathan decks next to the 11e ones, with overlapping
+# card names. The whitelist takes only 11e decks; images prefer 11e copies
+# (priority 1) over loose table copies (2) over Leviathan copies (3).
+DECK_11E_RE = re.compile(r"(red|blue) secondary|ca 2025", re.I)
+DECK_OLD_RE = re.compile(r"leviathan", re.I)
+
+
 def collect():
     d = json.load(open(MOD, encoding="utf-8"))
-    out = {}
+    out = {}         # key -> (prio, name, url)
     secondaries = set()
-    for o in walk({"ContainedObjects": d["ObjectStates"]}):
+
+    def visit(o, deck):
         n = o.get("Nickname") or ""
-        if o.get("Name") == "Deck" and re.search(r"secondar", n, re.I):
-            for c in o.get("ContainedObjects") or []:
-                if c.get("Nickname"):
-                    secondaries.add(norm(c["Nickname"]))
-        if o.get("Name") != "CardCustom" or not n or MAP_CARD_RE.search(n):
-            continue
-        for spec in (o.get("CustomDeck") or {}).values():
-            if spec.get("NumWidth") == 1 and spec.get("NumHeight") == 1 and spec.get("FaceURL"):
-                out.setdefault(norm(n), (n, spec["FaceURL"]))
-    return out, secondaries
+        if o.get("Name") == "Deck":
+            deck = n
+            if re.search(r"secondar", n, re.I) and not DECK_OLD_RE.search(n):
+                for c in o.get("ContainedObjects") or []:
+                    if c.get("Nickname"):
+                        secondaries.add(norm(c["Nickname"]))
+        if o.get("Name") == "CardCustom" and n and not MAP_CARD_RE.search(n):
+            for spec in (o.get("CustomDeck") or {}).values():
+                if spec.get("NumWidth") == 1 and spec.get("NumHeight") == 1 and spec.get("FaceURL"):
+                    prio = (1 if deck and DECK_11E_RE.search(deck)
+                            else 3 if deck and DECK_OLD_RE.search(deck) else 2)
+                    k = norm(n)
+                    if k not in out or prio < out[k][0]:
+                        out[k] = (prio, n, spec["FaceURL"])
+        for c in o.get("ContainedObjects") or []:
+            visit(c, deck)
+        for c in (o.get("States") or {}).values():
+            visit(c, deck)
+
+    for top in d["ObjectStates"]:
+        visit(top, None)
+    return {k: (nm, url) for k, (_, nm, url) in out.items()}, secondaries
 
 
 def fetch(url):
