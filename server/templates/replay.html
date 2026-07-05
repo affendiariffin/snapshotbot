@@ -642,7 +642,7 @@ function cardOrPill(name, tag){
     ? ((EMBEDDED.cards || {})[key] ? 'data:image/jpeg;base64,' + EMBEDDED.cards[key] : null)
     : '/api/card/' + key + '.jpg?v=' + CARDS_REV;
   if (!src) return pill(name, tag);
-  return `<img class="mcard" loading="lazy" src="${src}" alt="${esc(name)}" title="${esc(name)}"
+  return `<img class="mcard" src="${src}" alt="${esc(name)}" title="${esc(name)}"
     data-name="${esc(name)}" data-tag="${tag || ''}" onclick="lightbox(this)" onerror="cardFail(this)">`;
 }
 function cardFail(img){
@@ -704,6 +704,7 @@ function deriveCards(cd){
           red_secondary: sec('red_secondary'), blue_secondary: sec('blue_secondary'),
           deployment: cd.deployment || [], twist: cd.twist || []};
 }
+let lastPanelHtml = '';
 function renderPanel(){
   const f = FRAMES[cur] || {};
   const sc = f.scores || {}, cd = deriveCards(f.cards || {});
@@ -744,7 +745,7 @@ function renderPanel(){
     <td>${p2.secondary || 0} / 45</td><td>${p2.primary || 0} / 45</td><td class="tot p2">${p2.total || 0}</td>
     <td class="c-name-p2">Totals</td></tr>`;
 
-  panel.innerHTML = `<div class="players">
+  const html = `<div class="players">
     ${block('p1', redName, p1, cd.red_primary, cd.red_secondary, p1.fixed)}
     ${block('p2', blueName, p2, cd.blue_primary, cd.blue_secondary, p2.fixed)}
   </div>
@@ -759,6 +760,12 @@ function renderPanel(){
       <th class="p2h">SEC</th><th class="p2h">PRI</th><th class="p2h">TOT</th>
       <th class="c-name-p2">${esc(blueName)} &#9632;</th>
     </tr></thead><tbody>${rows}</tbody></table></div>`;
+  // Live sessions re-render every 5s poll; rewriting identical DOM restarts every
+  // <img> load and they never finish. Only touch the DOM when content changed.
+  if (html !== lastPanelHtml){
+    lastPanelHtml = html;
+    panel.innerHTML = html;
+  }
 }
 
 /* ---------- frames / timeline ---------- */
