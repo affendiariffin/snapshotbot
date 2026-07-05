@@ -4,7 +4,7 @@ import json
 import os
 import re
 
-from flask import Flask, Response, jsonify, redirect, render_template
+from flask import Flask, Response, jsonify, redirect, render_template, request
 
 from server import db, meshgeom
 from server.api import ADMIN_KEY, api, is_admin
@@ -72,9 +72,16 @@ def admin_login(key):
     return resp
 
 
+def _admin_view():
+    # ?guest=1 lets Fendi preview the guest rendering without shedding his cookie.
+    # Display-only: the write APIs still honour the cookie, but the guest UI never
+    # calls them (read-only textareas, no rename/delete buttons).
+    return is_admin() and "guest" not in request.args
+
+
 @app.get("/")
 def index():
-    return render_template("index.html", sessions=db.list_sessions(), admin=is_admin())
+    return render_template("index.html", sessions=db.list_sessions(), admin=_admin_view())
 
 
 @app.get("/r/<slug>")
@@ -91,7 +98,7 @@ def replay(slug):
         layout_key=key,
         layout_meta_json=json.dumps(lay or {}, ensure_ascii=False),
         embedded_json=None,
-        admin=is_admin(),
+        admin=_admin_view(),
         cards_rev=cards_rev,
         geom_rev=geom_rev,
     )
