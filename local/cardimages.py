@@ -42,11 +42,12 @@ def walk(o):
         yield from walk(c)
 
 
-# The mod still carries 10e Leviathan decks next to the 11e ones, with overlapping
-# card names. The whitelist takes only 11e decks; images prefer 11e copies
-# (priority 1) over loose table copies (2) over Leviathan copies (3).
-DECK_11E_RE = re.compile(r"(red|blue) secondary|ca 2025", re.I)
-DECK_OLD_RE = re.compile(r"leviathan", re.I)
+# The mod still carries 10e Leviathan decks AND obsolete CA 2025 fixed cards next
+# to the current ones. The whitelist = the Red/Blue Secondary decks only (their 18
+# names ARE the GDM 2026 pool; fixed/tactical are two uses of one card now — no
+# more Cull The Horde etc.). Images prefer current copies over old-deck copies.
+DECK_11E_RE = re.compile(r"(red|blue) secondary", re.I)
+DECK_OLD_RE = re.compile(r"leviathan|ca 2025", re.I)
 
 
 def collect():
