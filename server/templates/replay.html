@@ -927,7 +927,13 @@ function show(n){
 }
 function setPlaying(on){
   playing = on; playBtn.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
-  if (playing){ playTimer = setInterval(() => show(cur >= FRAMES.length - 1 ? 0 : cur + 1), 1400); }
+  if (playing){
+    if (cur >= FRAMES.length - 1) show(0);   // play from the end = restart once
+    playTimer = setInterval(() => {
+      if (cur >= FRAMES.length - 1) setPlaying(false);   // stop at the end, no loop
+      else show(cur + 1);
+    }, 1400);
+  }
   else { clearInterval(playTimer); }
 }
 playBtn.onclick = () => setPlaying(!playing);
