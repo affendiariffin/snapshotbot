@@ -8,6 +8,13 @@
   :root { --red:#e05555; --blue:#5588e0; --bg:#0d0f14; --panel:#13161e; --card:#1c2030;
           --border:#252840; --text:#d0d6e8; --muted:#5a6080; --accent:#f0c040; }
   *{box-sizing:border-box;margin:0;padding:0}
+  /* dark scrollbars: scrollbar-color = Firefox + Chrome 121+, ::-webkit-* = older Chrome */
+  html{scrollbar-color:#343a55 var(--panel)}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:var(--panel)}
+  ::-webkit-scrollbar-thumb{background:#343a55;border-radius:5px}
+  ::-webkit-scrollbar-thumb:hover{background:#46507a}
+  ::-webkit-scrollbar-corner,::-webkit-resizer{background:var(--panel)}
   body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;
        max-width:860px;margin:0 auto;padding:28px 16px}
   h1{font-size:1.4rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);text-align:center}
@@ -17,7 +24,7 @@
   .role-pill.guest{background:var(--panel);border:1px solid var(--border);color:var(--muted)}
   body{position:relative}
   .sub{font-size:.8rem;color:var(--muted);text-align:center;margin:6px 0 26px;line-height:1.5}
-  .session{display:flex;align-items:center;gap:12px;background:var(--panel);
+  .session{display:flex;align-items:center;gap:12px;background:var(--panel);position:relative;
     border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:10px}
   .session:hover{border-color:var(--accent)}
   .body{flex:1;min-width:0;cursor:pointer}
@@ -34,6 +41,14 @@
   .acts .del:hover{color:var(--red);border-color:var(--red)}
   .rename-input{background:var(--card);border:1px solid var(--accent);color:var(--text);
     border-radius:4px;padding:3px 8px;font-size:1rem;font-family:inherit;font-weight:700;width:100%}
+  .confirm-pop{position:absolute;right:12px;top:calc(100% - 8px);z-index:10;
+    background:var(--card);border:1px solid var(--red);border-radius:6px;padding:9px 12px;
+    box-shadow:0 8px 24px #000c;display:flex;align-items:center;gap:10px;font-size:.82rem}
+  .confirm-pop button{border-radius:5px;padding:5px 10px;font-size:.78rem;cursor:pointer;
+    font-family:inherit;line-height:1;background:var(--panel);border:1px solid var(--border);color:var(--muted)}
+  .confirm-pop .yes{color:var(--red);border-color:var(--red)}
+  .confirm-pop .yes:hover{background:#2a1418}
+  .confirm-pop .no:hover{color:var(--text);border-color:var(--accent)}
   .empty{color:var(--muted);text-align:center;padding:40px 0;font-style:italic}
   .credits{font-size:.7rem;color:var(--muted);text-align:center;margin-top:26px}
   .credits a{color:var(--muted)}
@@ -106,12 +121,24 @@ document.querySelectorAll('.session').forEach(card => {
     input.addEventListener('blur', () => commit(true));
     input.addEventListener('click', e => e.stopPropagation());
   });
-  card.querySelector('[data-act="delete"]').addEventListener('click', () => {
+  // Themed in-page popover instead of the browser's native confirm (Fendi):
+  // still a hard stop, because deletion is the one irreversible act here.
+  card.querySelector('[data-act="delete"]').addEventListener('click', e => {
+    e.stopPropagation();
+    const old = card.querySelector('.confirm-pop');
+    if (old){ old.remove(); return; }
     const nEl = card.querySelector('[data-role="title"], .rename-input');
     const name = (nEl.value || nEl.textContent || slug).trim();
-    if (!confirm('Delete "' + name + '" permanently? Download it first if anyone wants to keep it.')) return;
-    fetch('/api/session/' + slug + '/delete', {method: 'POST'})
-      .then(() => card.remove());
+    const pop = document.createElement('div');
+    pop.className = 'confirm-pop';
+    pop.innerHTML = '<span>Delete <b>' + name.replace(/</g, '&lt;') +
+      '</b> forever?</span><button class="yes">delete</button><button class="no">keep</button>';
+    pop.querySelector('.yes').onclick = () =>
+      fetch('/api/session/' + slug + '/delete', {method: 'POST'}).then(() => card.remove());
+    pop.querySelector('.no').onclick = () => pop.remove();
+    pop.addEventListener('click', ev => ev.stopPropagation());
+    card.appendChild(pop);
+    setTimeout(() => document.addEventListener('click', () => pop.remove(), {once: true}), 0);
   });
 });
 </script>

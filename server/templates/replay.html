@@ -8,6 +8,13 @@
   :root { --red:#e05555; --blue:#5588e0; --bg:#0d0f14; --panel:#13161e; --card:#1c2030;
           --border:#252840; --text:#d0d6e8; --muted:#5a6080; --accent:#f0c040; }
   *{box-sizing:border-box;margin:0;padding:0}
+  /* dark scrollbars: scrollbar-color = Firefox + Chrome 121+, ::-webkit-* = older Chrome */
+  html{scrollbar-color:#343a55 var(--panel)}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-track{background:var(--panel)}
+  ::-webkit-scrollbar-thumb{background:#343a55;border-radius:5px}
+  ::-webkit-scrollbar-thumb:hover{background:#46507a}
+  ::-webkit-scrollbar-corner,::-webkit-resizer{background:var(--panel)}
   body{background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;
        display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:20px 16px;gap:14px}
   .header{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap;position:relative;width:71vw;max-width:100%}
