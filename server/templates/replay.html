@@ -396,6 +396,36 @@ function resolveModels(fr){
   layoutReserves(fr);
 }
 
+// The layout SVG bakes in which half is red (meta.red_zone = that zone's centroid).
+// If the players sat the other way round, rotate the recorded world 180° so red
+// deploys in the red-tinted zone — decided once from claimed deployment positions.
+let FLIPPED = false, flipDecided = false;
+function flipFrame(f){
+  for (const m of f.models || []){
+    if (m.v) continue;                     // gutter positions are synthetic anyway
+    m.x = -m.x; m.z = -m.z;
+    if (m.r != null) m.r = (m.r + 180) % 360;
+  }
+  for (const mk of f.markers || []){ mk.x = -mk.x; mk.z = -mk.z; }
+  delete f._resolvedWith;                  // re-resolve + re-pack gutters
+}
+function maybeFlip(){
+  if (flipDecided || !LAYOUT_META.red_zone) return;
+  const [cx, cz] = LAYOUT_META.red_zone;
+  let dot = 0, n = 0, past = false;
+  for (const f of FRAMES){
+    if (f.round >= 2){ past = true; break; }   // deployment + R1 are still "at home"
+    for (const m of f.models || []){
+      if (!m.t || m.v) continue;
+      dot += (m.x * cx + m.z * cz) * (m.t === 'red' ? 1 : -1);
+      n++;
+    }
+  }
+  if (n < 60 && !past && !ENDED) return;   // live: keep sampling as claims spread
+  flipDecided = true;
+  if (n && dot < 0){ FLIPPED = true; FRAMES.forEach(flipFrame); }
+}
+
 // Reserves / Transports: models flagged v=1 sit on the off-table reserves boards.
 // Their raw positions there are trust-based scatter, so ignore them — re-pack each
 // side's reserves into its gutter, grouped by yellowscribe unit (rows of true-size
@@ -688,8 +718,10 @@ function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt
 // Actual card faces from the LCT mod (sb_card_images), shown inline — no links
 // to third-party rules sites. Missing image → plain pill via onerror.
 function cardKey(name){
-  // leading articles vary between deck and played copies ("A Grievous Blow")
-  return String(name).toLowerCase().trim().replace(/^(a|an|the)\s+/, '').replace(/[^a-z0-9]/g, '');
+  // registry slot texts carry "1. " numbering; leading articles vary between
+  // deck and played copies ("A Grievous Blow")
+  return String(name).toLowerCase().trim().replace(/^\d+[.)]\s*/, '')
+    .replace(/^(a|an|the)\s+/, '').replace(/[^a-z0-9]/g, '');
 }
 function cardOrPill(name, tag){
   if (!name) return '<div class="mcard-empty">— none —</div>';
@@ -787,13 +819,16 @@ function renderPanel(){
       <td>${r2.secondary || 0}</td><td>${r2.primary || 0}</td><td class="tot p2">${r2.total || 0}</td>
       <td class="c-name-p2">Round ${r + 1}</td></tr>`;
   }
-  const eobHas = (p1.endOfBattle || 0) + (p2.endOfBattle || 0) > 0;
-  rows += `<tr class="${eobHas ? '' : 'dim'}">
+  // players type end-of-battle scoring into round 5; only surface the mod's own
+  // EoB fields if someone actually used them
+  if ((p1.endOfBattle || 0) + (p2.endOfBattle || 0) > 0){
+    rows += `<tr>
     <td class="c-name-p1">End of Battle</td>
     <td class="tot p1">${p1.endOfBattle || 0}</td><td>&mdash;</td><td>&mdash;</td>
     <td class="c-div"></td><td class="c-rnd">End of Battle</td><td class="c-div"></td>
     <td>&mdash;</td><td>&mdash;</td><td class="tot p2">${p2.endOfBattle || 0}</td>
     <td class="c-name-p2">End of Battle</td></tr>`;
+  }
   rows += `<tr class="total-row">
     <td class="c-name-p1">Totals</td>
     <td class="tot p1">${p1.total || 0}</td><td>${p1.primary || 0} / 45</td><td>${p1.secondary || 0} / 45</td>
@@ -855,7 +890,11 @@ function gapMs(i){
   if (FRAMES[i + 1].resumed) return 0;
   return Math.min(Date.parse(FRAMES[i + 1].taken_at) - Date.parse(FRAMES[i].taken_at), MAX_GAP_MS);
 }
-function frameTurn(f){ return (f.scores && f.scores.turn && f.scores.turn.active) || null; }
+// round 0 = deployment: the mod's turn marker idles on red, so nobody's clock runs
+function frameTurn(f){
+  if (!f.round) return null;
+  return (f.scores && f.scores.turn && f.scores.turn.active) || null;
+}
 function buildTimeStrip(){
   if (FRAMES.length < 2 || !FRAMES.some(frameTurn)) return;
   document.getElementById('timeRow').style.display = 'flex';
@@ -932,7 +971,7 @@ function setPlaying(on){
     playTimer = setInterval(() => {
       if (cur >= FRAMES.length - 1) setPlaying(false);   // stop at the end, no loop
       else show(cur + 1);
-    }, 1400);
+    }, 700);
   }
   else { clearInterval(playTimer); }
 }
@@ -983,10 +1022,18 @@ function deriveArmyList(team){
   const comp = new Map();                 // unit key -> Map(name -> peak count)
   const wounds = new Map();               // unit key|name -> max wounds seen
   const order = [];
+  let claimed = null;                     // unclaimed pass: skip units a team ever claimed
+  if (!team){
+    claimed = new Set();
+    for (const f of FRAMES)
+      for (const m of f.models || [])
+        if (m.t && m.n) claimed.add(m.u ? 'u:' + m.u : 'n:' + m.n.toLowerCase());
+  }
   for (const f of FRAMES){
     const frame = new Map();
     for (const m of f.models || []){
       if ((team ? m.t !== team : !!m.t) || !m.n) continue;
+      if (claimed && claimed.has(m.u ? 'u:' + m.u : 'n:' + m.n.toLowerCase())) continue;
       const uk = m.u ? 'u:' + m.u : 'n:' + m.n.toLowerCase();
       let nm = frame.get(uk);
       if (!nm) frame.set(uk, nm = new Map());
@@ -1033,9 +1080,11 @@ function ingest(sess, first){
   ENDED = sess.ended_at != null;
   const wasAtEnd = cur >= FRAMES.length - 1;
   for (const s of sess.snapshots){
+    if (FLIPPED) flipFrame(s);
     FRAMES.push(s); strokes.push([]);
     lastSnapId = s.id;
   }
+  maybeFlip();
   if (!HAS_RES && sess.snapshots.some(s => (s.models || []).some(m => m.v))){
     HAS_RES = true;                       // widen the world once, session-wide
     fitView();
