@@ -386,12 +386,51 @@ function resolveModels(fr){
     m._g = measuredBase(m, true) || (gb && !gb.hull ? gb : null)
            || (m.u && unit[m.u]) || measuredBase(m, false) || null;
   }
+  layoutReserves(fr);
+}
+
+// Reserves / Transports: models flagged v=1 sit on the off-table reserves boards.
+// Their raw positions there are trust-based scatter, so ignore them — re-pack each
+// side's reserves into its gutter, grouped by yellowscribe unit (rows of true-size
+// footprints, facing up), so the audience reads "what hasn't deployed yet" at a
+// glance. Runs inside the resolve guard: repacks when silhouettes arrive.
+const RGUT = 13;
+let HAS_RES = false;
+function layoutReserves(fr){
+  for (const side of ['red', 'blue']){
+    const list = (fr.models || []).filter(m => m.v &&
+      (m.t === side || (!m.t && side === 'red')));   // unattributed → left gutter
+    if (!list.length) continue;
+    const dir = side === 'red' ? -1 : 1;
+    const xEdge = dir * (HX + 1.5);
+    const innerW = RGUT - 2;
+    const groups = new Map();
+    for (const m of list){
+      const k = m.u || 'n:' + (m.n || '').toLowerCase();
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(m);
+    }
+    let z = HZ - 2.2;                                // header clearance
+    for (const [, ms] of groups){
+      let cx = 0, rowH = 0, zRow = z;
+      for (const m of ms){
+        const b = modelBase(m), sc = m.s || 1;
+        const w = (Array.isArray(b) ? b[0] : b) * sc, h = (Array.isArray(b) ? b[1] : b) * sc;
+        if (cx > 0 && cx + w > innerW){ zRow -= rowH + 0.25; cx = 0; rowH = 0; }
+        m.x = xEdge + dir * (cx + w / 2);
+        m.z = zRow - h / 2;
+        m.r = 0;
+        cx += w + 0.25; rowH = Math.max(rowH, h);
+      }
+      z = zRow - rowH - 1.1;                         // gap between units
+    }
+  }
 }
 
 function fitView(){
   const r = wrap.getBoundingClientRect();
   cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
-  const s = Math.min(cv.width / (2 * HX + 4), cv.height / (2 * HZ + 4));
+  const s = Math.min(cv.width / (2 * (HX + (HAS_RES ? RGUT + 1 : 0)) + 4), cv.height / (2 * HZ + 4));
   cam = {scale: s, ox: cv.width / 2, oy: cv.height / 2};
   draw();
 }
@@ -452,6 +491,16 @@ function draw(){
   }
   ctx.strokeStyle = '#2a3550'; ctx.lineWidth = 2;
   poly([[-HX,-HZ],[HX,-HZ],[HX,HZ],[-HX,HZ]]); ctx.stroke();
+
+  if (HAS_RES){
+    ctx.font = '600 ' + (11 * devicePixelRatio) + 'px Segoe UI';
+    ctx.textAlign = 'center';
+    for (const dir of [-1, 1]){
+      const [hx, hy] = W2S(dir * (HX + 1.5 + (RGUT - 2) / 2), HZ - 0.6);
+      ctx.fillStyle = '#5a6080';
+      ctx.fillText('RESERVES / TRANSPORTS', hx, hy);
+    }
+  }
 
   const models = (FRAMES[cur] && FRAMES[cur].models) || [];
   for (const m of models){
@@ -965,6 +1014,10 @@ function ingest(sess, first){
   for (const s of sess.snapshots){
     FRAMES.push(s); strokes.push([]);
     lastSnapId = s.id;
+  }
+  if (!HAS_RES && sess.snapshots.some(s => (s.models || []).some(m => m.v))){
+    HAS_RES = true;                       // widen the world once, session-wide
+    fitView();
   }
   if (first){
     NOTES = sess.notes || {};

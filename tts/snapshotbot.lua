@@ -407,11 +407,56 @@ function markerTeam(obj, name)
     return markerSide[obj.getGUID()]
 end
 
+-- Reserves / Transports: LCT parks undeployed units on a locked "Reinforcements
+-- and Reserves Board" behind each table edge. Models sitting there are captured
+-- with v=1 (viewer re-packs them into side gutters). Which board = whose side
+-- (z-sign vs red's hand), and sitting on your own board claims the unit sticky —
+-- transports arrive on the battlefield pre-attributed. Rects cached once found;
+-- re-scanned while sides are unknown (nobody seated as Red yet).
+RESERVE_BOARD = "reinforcements and reserves"
+
+function findReserveRects()
+    local rects = {}
+    local redSign = redHalfSign()
+    for _, obj in ipairs(getAllObjects()) do
+        if obj.name == "Custom_Token" and obj.getLock()
+                and string.find(string.lower(obj.getName() or ""), RESERVE_BOARD, 1, true) then
+            local ok, b = pcall(function() return obj.getBounds() end)
+            if ok and b and b.center.z ~= 0 then
+                local side = nil
+                if redSign ~= nil then
+                    side = ((b.center.z >= 0 and 1 or -1) == redSign) and "red" or "blue"
+                end
+                table.insert(rects, {
+                    x1 = b.center.x - b.size.x / 2, x2 = b.center.x + b.size.x / 2,
+                    z1 = b.center.z - b.size.z / 2, z2 = b.center.z + b.size.z / 2,
+                    side = side,
+                })
+            end
+        end
+    end
+    return rects
+end
+
+function reserveRectAt(p)
+    for _, r in ipairs(reserveRects or {}) do
+        if p.x >= r.x1 and p.x <= r.x2 and p.z >= r.z1 and p.z <= r.z2 then return r end
+    end
+    return nil
+end
+
 function readModels()
     local models = {}
     local markers = {}
     local sigParts = {}
     local guids = {}
+    local rescan = reserveRects == nil or #reserveRects == 0
+    if not rescan then
+        for _, r in ipairs(reserveRects) do
+            if r.side == nil then rescan = true end
+        end
+    end
+    if rescan then reserveRects = findReserveRects() end
     for _, obj in ipairs(getAllObjects()) do
         if obj.name == "Custom_Token" and not obj.getLock() then
             local p = obj.getPosition()
@@ -436,7 +481,13 @@ function readModels()
         end
         if obj ~= self and not obj.getLock() and isModelType(obj.name) and not isExcluded(obj) then
             local p = obj.getPosition()
-            if math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z then
+            local onMat = math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z
+            local res = nil
+            if not onMat then res = reserveRectAt(p) end
+            if onMat or res then
+                if res and res.side and teamByGuid[obj.getGUID()] == nil then
+                    teamByGuid[obj.getGUID()] = res.side
+                end
                 local b = obj.getBoundsNormalized().size
                 local name, wounds = cleanName(obj.getName())
                 local gk = modelKey(obj)
@@ -457,6 +508,7 @@ function readModels()
                     u = unitId(obj),
                     g = gk,
                     s = math.abs(sc - 1) > 0.01 and round(sc, 2) or nil,
+                    v = res and 1 or nil,
                 })
                 table.insert(guids, obj.getGUID())
             end
