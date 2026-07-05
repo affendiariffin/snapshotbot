@@ -4,6 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Snapshotbot replay</title>
+{% if og %}
+<meta property="og:site_name" content="Fendi's Snapshotbot">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{ og.title }}">
+<meta property="og:description" content="{{ og.desc }}">
+<meta property="og:image" content="{{ og.image }}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#f0c040">
+{% endif %}
 <style>
   :root { --red:#e05555; --blue:#5588e0; --bg:#0d0f14; --panel:#13161e; --card:#1c2030;
           --border:#252840; --text:#d0d6e8; --muted:#5a6080; --accent:#f0c040; }
