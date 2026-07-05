@@ -1,79 +1,31 @@
-# Build the TTS Saved Object (spawnable token, no script pasting) from snapshotbot.lua.
+# Inject snapshotbot.lua into the "Snapshotbot V2" Saved Object (Fendi's own vessel,
+# saved from TTS — the cosmetics are his; we only own the script, name, description).
 # Run after any Lua change, then respawn the token in TTS from Objects > Saved Objects.
-# Vessel replicates Shinebot's: a built-in PiecePack_Arms wooden token (no custom assets).
 import json
 import os
-import shutil
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.expanduser(
-    "~/Documents/My Games/Tabletop Simulator/Saves/Saved Objects/Tools/Snapshotbot.json"
-)
-SHINEBOT_PNG = os.path.expanduser(
-    "~/Documents/My Games/Tabletop Simulator/Saves/Saved Objects/Tools/Shinebot.png"
+    "~/Documents/My Games/Tabletop Simulator/Saves/Saved Objects/Tools/Snapshotbot V2.json"
 )
 
 with open(os.path.join(HERE, "snapshotbot.lua"), encoding="utf-8") as f:
     lua = f.read()
 
-token = {
-    "SaveName": "",
-    "GameMode": "",
-    "Gravity": 0.5,
-    "PlayArea": 0.5,
-    "Date": "",
-    "Table": "",
-    "Sky": "",
-    "Note": "",
-    "Rules": "",
-    "XmlUI": "",
-    "LuaScript": "",
-    "LuaScriptState": "",
-    "ObjectStates": [
-        {
-            "Name": "PiecePack_Arms",
-            "Transform": {
-                "posX": 0.0, "posY": 1.0, "posZ": 0.0,
-                "rotX": 0.0, "rotY": 180.0, "rotZ": 0.0,
-                "scaleX": 1.0, "scaleY": 1.0, "scaleZ": 1.0,
-            },
-            "Nickname": "Snapshotbot",
-            "Description": "Drop on an LCT table — records the game to "
-                           "snapshotbot-production.up.railway.app automatically. "
-                           "Replay link appears in chat.",
-            "GMNotes": "",
-            "AltLookAngle": {"x": 0.0, "y": 0.0, "z": 0.0},
-            "ColorDiffuse": {"r": 1.0, "g": 1.0, "b": 1.0},
-            "LayoutGroupSortIndex": 0,
-            "Value": 0,
-            "Locked": False,
-            "Grid": True,
-            "Snap": True,
-            "IgnoreFoW": False,
-            "MeasureMovement": False,
-            "DragSelectable": True,
-            "Autoraise": True,
-            "Sticky": True,
-            "Tooltip": True,
-            "GridProjection": False,
-            "HideWhenFaceDown": False,
-            "Hands": False,
-            "MeshIndex": 6,
-            "LuaScript": lua,
-            "LuaScriptState": "",
-            "XmlUI": "",
-            "GUID": "5b0741",
-        }
-    ],
-}
+with open(OUT, encoding="utf-8") as f:
+    token = json.load(f)
 
-os.makedirs(os.path.dirname(OUT), exist_ok=True)
+obj = token["ObjectStates"][0]
+# The nickname is functional, not cosmetic: the duplicate-token guard and the
+# capture exclusion (EXCLUDE_SUBSTR) both match on "Snapshotbot".
+obj["Nickname"] = "Snapshotbot"
+obj["Description"] = ("Drop on an LCT table — records the game to "
+                      "snapshotbot-production.up.railway.app automatically. "
+                      "Replay link appears in chat.")
+obj["GMNotes"] = ""            # must stay empty: "Red"/"Blue" in GMNotes means team
+obj["LuaScript"] = lua
+obj["LuaScriptState"] = ""
+
 with open(OUT, "w", encoding="utf-8") as f:
     json.dump(token, f, indent=2, ensure_ascii=False)
 print("written", OUT)
-
-# Placeholder tile thumbnail (same wooden token look); TTS regenerates it on re-save.
-png = OUT[:-5] + ".png"
-if not os.path.exists(png) and os.path.exists(SHINEBOT_PNG):
-    shutil.copy(SHINEBOT_PNG, png)
-    print("thumbnail placeholder copied")
