@@ -176,7 +176,7 @@ function readSecNames(side)
     return names
 end
 
-function readCards()
+function readCards(loose)
     local cards = {}
     for key, guids in pairs(CARD_ZONES) do
         local names = {}
@@ -194,37 +194,9 @@ function readCards()
     -- Active secondaries from the mod's registry override the (dead) legacy zones.
     cards.red_secondary = readSecNames("red")
     cards.blue_secondary = readSecNames("blue")
-    -- LCT's newer SEC tableau boards don't overlap the legacy ScriptingTriggers,
-    -- so also capture every loose face-up card (name + position + table half);
-    -- the viewer classifies primary/secondary by name. Cards in players' HANDS
-    -- are excluded — drawn-but-hidden info must not leak into a shared replay.
-    local inHand = {}
-    for _, color in ipairs(getSeatedPlayers()) do
-        local ok, held = pcall(function() return Player[color].getHandObjects() end)
-        if ok and held then
-            for _, h in ipairs(held) do inHand[h.getGUID()] = true end
-        end
-    end
-    local loose = {}
-    local redSign = redHalfSign()
-    for _, obj in ipairs(getAllObjects()) do
-        if (obj.name == "Card" or obj.name == "CardCustom")
-            and not inHand[obj.getGUID()] and #loose < 60 then
-            local ok, fd = pcall(function() return obj.is_face_down end)
-            if ok and fd == false then
-                local n = obj.getName()
-                if n ~= nil and n ~= "" then
-                    local p = obj.getPosition()
-                    local t = nil
-                    if redSign ~= nil then
-                        t = ((p.z >= 0 and 1 or -1) == redSign) and "red" or "blue"
-                    end
-                    table.insert(loose, {n = n, x = round(p.x, 1), z = round(p.z, 1), t = t})
-                end
-            end
-        end
-    end
-    cards.loose = loose
+    -- Loose face-up cards are collected by readModels' single table sweep and
+    -- passed in — this function must never sweep the table itself.
+    cards.loose = loose or {}
     return cards
 end
 
@@ -290,6 +262,17 @@ function onObjectDrop(playerColor, obj)
     return ok
 end
 
+-- Duplicate tokens announce themselves by spawning: check right then instead of
+-- sweeping the whole table every poll tick (a slow 1/min tick check remains as
+-- the net). 1s delay lets the newcomer finish onLoad so the election sees its vars.
+function onObjectSpawn(obj)
+    pcall(function()
+        if obj ~= self and obj.getName() == "Snapshotbot" then
+            Wait.time(function() pcall(dedupeCheck) end, 1)
+        end
+    end)
+end
+
 -- Status markers are dispensed from per-side racks of infinite bags: leaving a
 -- container on red's half means red placed it. More precise than the drop claim,
 -- so it overwrites; the "(Red)"/"(Blue)" name suffix wins over both at read time.
@@ -329,6 +312,44 @@ function cleanName(raw)
     if wounds then n = string.gsub(n, "^%s*%d+/%d+%s+", "") end
     n = string.gsub(string.gsub(n, "^%s+", ""), "%s+$", "")
     return n, wounds
+end
+
+-- The 5s sweep re-parses the same nicknames thousands of times per game; memoize
+-- by the raw string (wound counters change the key, so hits stay correct). The
+-- cap only guards a pathological table from growing the memo forever.
+nameMemo = nameMemo or {}
+nameMemoN = nameMemoN or 0
+
+function memoName(raw)
+    local hit = nameMemo[raw]
+    if hit then return hit[1], hit[2] end
+    if nameMemoN >= 4096 then nameMemo = {}; nameMemoN = 0 end
+    local n, w = cleanName(raw)
+    nameMemo[raw] = {n, w}
+    nameMemoN = nameMemoN + 1
+    return n, w
+end
+
+-- Facts that can't change while an object lives (bounds size, yellowscribe unit
+-- tag, spawn scale, nickname-substring exclusion): each is a Lua->C# API call,
+-- so pay them once per object, not on every poll tick.
+modelFacts = modelFacts or {}
+markerBounds = markerBounds or {}
+
+function modelFactsFor(obj, g)
+    local f = modelFacts[g]
+    if f == nil then
+        local b = obj.getBoundsNormalized().size
+        local sc = obj.getScale().x
+        f = {
+            b = {round(b.x, 1), round(b.z, 1)},
+            u = unitId(obj),
+            s = math.abs(sc - 1) > 0.01 and round(sc, 2) or nil,
+            ex = isExcluded(obj),
+        }
+        modelFacts[g] = f
+    end
+    return f
 end
 
 -- Yellowscribe tags every model of a unit "uuid:xxxxxxxx" — the unit handle.
@@ -449,9 +470,16 @@ function reserveRectAt(p)
     return nil
 end
 
-function readModels()
+-- The ONLY per-tick table sweep: models, status markers AND loose face-up cards
+-- come out of one getAllObjects pass. When called from the poll coroutine
+-- (chunked=true) it yields a frame every CHUNK objects, so a big table never
+-- stalls a single frame — the 5s cadence hides a sweep spread over ~5 frames.
+CHUNK = 50
+
+function readModels(chunked)
     local models = {}
     local markers = {}
+    local loose = {}
     local sigParts = {}
     local guids = {}
     local rescan = reserveRects == nil or #reserveRects == 0
@@ -461,8 +489,19 @@ function readModels()
         end
     end
     if rescan then reserveRects = findReserveRects() end
-    for _, obj in ipairs(getAllObjects()) do
-        if obj.name == "Custom_Token" and not obj.getLock() then
+    -- Hand cards are hidden info and must not leak into a shared replay.
+    local inHand = {}
+    for _, color in ipairs(getSeatedPlayers()) do
+        local ok, held = pcall(function() return Player[color].getHandObjects() end)
+        if ok and held then
+            for _, h in ipairs(held) do inHand[h.getGUID()] = true end
+        end
+    end
+    local redSign = redHalfSign()
+    for i, obj in ipairs(getAllObjects()) do
+        if chunked and i % CHUNK == 0 then coroutine.yield(0) end
+        local tname = obj.name
+        if tname == "Custom_Token" and not obj.getLock() then
             local p = obj.getPosition()
             if math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z then
                 local name = stripTags(obj.getName())
@@ -472,49 +511,72 @@ function readModels()
                     if string.find(lower, s, 1, true) then excluded = true end
                 end
                 if not excluded and #markers < 100 then
-                    local b = obj.getBoundsNormalized().size
-                    table.insert(sigParts, string.format("%s:%.1f:%.1f", obj.getGUID(), p.x, p.z))
+                    local g = obj.getGUID()
+                    local b = markerBounds[g]
+                    if b == nil then
+                        local bs = obj.getBoundsNormalized().size
+                        b = {round(bs.x, 1), round(bs.z, 1)}
+                        markerBounds[g] = b
+                    end
+                    table.insert(sigParts, string.format("%s:%.1f:%.1f", g, p.x, p.z))
                     table.insert(markers, {
                         n = name,
                         x = round(p.x, 2), z = round(p.z, 2),
-                        b = {round(b.x, 1), round(b.z, 1)},
+                        b = b,
                         t = markerTeam(obj, name),
                     })
                 end
             end
-        end
-        if obj ~= self and not obj.getLock() and isModelType(obj.name) and not isExcluded(obj) then
-            local p = obj.getPosition()
-            local onMat = math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z
-            local res = nil
-            if not onMat then res = reserveRectAt(p) end
-            if onMat or res then
-                if res and res.side and teamByGuid[obj.getGUID()] == nil then
-                    teamByGuid[obj.getGUID()] = res.side
+        elseif (tname == "Card" or tname == "CardCustom") and #loose < 60 then
+            local g = obj.getGUID()
+            if not inHand[g] then
+                local ok, fd = pcall(function() return obj.is_face_down end)
+                if ok and fd == false then
+                    local n = obj.getName()
+                    if n ~= nil and n ~= "" then
+                        local p = obj.getPosition()
+                        local t = nil
+                        if redSign ~= nil then
+                            t = ((p.z >= 0 and 1 or -1) == redSign) and "red" or "blue"
+                        end
+                        table.insert(loose, {n = n, x = round(p.x, 1), z = round(p.z, 1), t = t})
+                    end
                 end
-                local b = obj.getBoundsNormalized().size
-                local name, wounds = cleanName(obj.getName())
-                local gk = modelKey(obj)
-                local sc = obj.getScale().x
-                if gk and not sentGeom[gk] then
-                    sentGeom[gk] = true
-                    table.insert(geomQueue, obj.getGUID())
+            end
+        elseif obj ~= self and isModelType(tname) and not obj.getLock() then
+            local g = obj.getGUID()
+            local facts = modelFactsFor(obj, g)
+            if not facts.ex then
+                local p = obj.getPosition()
+                local onMat = math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z
+                local res = nil
+                if not onMat then res = reserveRectAt(p) end
+                if onMat or res then
+                    if res and res.side and teamByGuid[g] == nil then
+                        teamByGuid[g] = res.side
+                    end
+                    local name, wounds = memoName(obj.getName())
+                    local gk = modelKey(obj)
+                    if gk and not sentGeom[gk] then
+                        sentGeom[gk] = true
+                        table.insert(geomQueue, g)
+                    end
+                    local rot = obj.getRotation().y
+                    table.insert(sigParts, string.format("%s:%.1f:%.1f:%.0f", g, p.x, p.z, rot))
+                    table.insert(models, {
+                        n = name,
+                        x = round(p.x, 2), z = round(p.z, 2),
+                        r = round(rot, 1),
+                        b = facts.b,
+                        t = modelTeam(obj),
+                        w = wounds,
+                        u = facts.u,
+                        g = gk,
+                        s = facts.s,
+                        v = res and 1 or nil,
+                    })
+                    table.insert(guids, g)
                 end
-                local rot = obj.getRotation().y
-                table.insert(sigParts, string.format("%s:%.1f:%.1f:%.0f", obj.getGUID(), p.x, p.z, rot))
-                table.insert(models, {
-                    n = name,
-                    x = round(p.x, 2), z = round(p.z, 2),
-                    r = round(rot, 1),
-                    b = {round(b.x, 1), round(b.z, 1)},
-                    t = modelTeam(obj),
-                    w = wounds,
-                    u = unitId(obj),
-                    g = gk,
-                    s = math.abs(sc - 1) > 0.01 and round(sc, 2) or nil,
-                    v = res and 1 or nil,
-                })
-                table.insert(guids, obj.getGUID())
             end
         end
     end
@@ -531,7 +593,7 @@ function readModels()
         end
     end
     table.sort(sigParts)
-    return models, table.concat(sigParts, "|"), markers
+    return models, table.concat(sigParts, "|"), markers, loose
 end
 
 -- One-time geometry post per unique sculpt: ship the mesh URLs + child transform to
@@ -619,21 +681,21 @@ function tryStartSession()
     end)
 end
 
-function doSnapshot(markLabel, models, markers)
+function doSnapshot(markLabel, models, markers, loose)
     if sessionSlug == nil then return end
     local ok, body = pcall(function()
         local scores = readScores() or {}
         scores.turn = readTurn()  -- rides in the scores blob; no schema change
         if models == nil then
-            local m, _, mk = readModels()
-            models, markers = m, mk
+            local m, _, mk, lc = readModels()
+            models, markers, loose = m, mk, lc
         end
         return {
             slug = sessionSlug,
             round = readCounter(ROUND_COUNTER),
             mark = markLabel,
             scores = scores,
-            cards = readCards(),
+            cards = readCards(loose),
             models = models,
             markers = markers or {},
         }
@@ -660,33 +722,57 @@ function doSnapshot(markLabel, models, markers)
     end)
 end
 
+-- Change detection only needs the RAW script_state strings — decoding five
+-- counters' JSON every tick just to re-encode them into a signature was waste.
+-- The real decode happens in doSnapshot, only when something actually changed.
+function counterRaw(ref)
+    local o = findObj(ref)
+    return (o and o.script_state) or ""
+end
+
 function computeSig(modelsSig)
     local sheet = findObj(SCORESHEET)
     local sheetState = (sheet and sheet.script_state) or ""
     local turn = readTurn()
-    return string.format("%s|%d|%d|%d|%d|%d|%s|%s|%s|%s", sheetState,
-        readCounter(ROUND_COUNTER), readCounter(TURN_COUNTERS.red), readCounter(TURN_COUNTERS.blue),
-        readCounter(CP_COUNTERS.red), readCounter(CP_COUNTERS.blue),
+    return string.format("%s|%s|%s|%s|%s|%s|%s|%s|%s|%s", sheetState,
+        counterRaw(ROUND_COUNTER), counterRaw(TURN_COUNTERS.red), counterRaw(TURN_COUNTERS.blue),
+        counterRaw(CP_COUNTERS.red), counterRaw(CP_COUNTERS.blue),
         turn and (turn.active .. (turn.phase or "")) or "",
         table.concat(readSecNames("red"), ","), table.concat(readSecNames("blue"), ","),
         modelsSig or "")
 end
 
+-- The poll body runs as a TTS coroutine so the table sweep can yield a frame
+-- every CHUNK objects — big tables cost several invisible frames instead of one
+-- visible hitch. TTS's single Lua thread means everyone shares our frame budget.
+polling = polling or false
+tickCount = tickCount or 0
+
 function onPollTick()
-    if dedupeCheck() then return end
-    if sessionSlug == nil then
-        tryStartSession()
-        return
-    end
-    local ok, models, msig, markers = pcall(readModels)
-    if not ok then return end
-    local ok2, sig = pcall(computeSig, msig)
-    if not ok2 then return end
-    if sig ~= lastSig or (os.time() - lastPostAt) >= FORCE_POST_SECONDS then
-        lastSig = sig
-        doSnapshot(nil, models, markers)
-    end
-    pcall(pumpGeomQueue)
+    if polling then return end
+    polling = true
+    startLuaCoroutine(self, "pollCo")
+end
+
+function pollCo()
+    local ok, err = pcall(function()
+        tickCount = tickCount + 1
+        if tickCount % 12 == 1 and dedupeCheck() then return end  -- ~1/min belt-and-braces
+        if sessionSlug == nil then
+            tryStartSession()
+            return
+        end
+        local models, msig, markers, loose = readModels(true)
+        local sig = computeSig(msig)
+        if sig ~= lastSig or (os.time() - lastPostAt) >= FORCE_POST_SECONDS then
+            lastSig = sig
+            doSnapshot(nil, models, markers, loose)
+        end
+        pumpGeomQueue()
+    end)
+    polling = false
+    if not ok then remoteLog("error", "poll failed: " .. tostring(err)) end
+    return 1
 end
 
 ---------------------------------------------------------------------------
