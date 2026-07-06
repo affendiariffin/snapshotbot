@@ -39,7 +39,17 @@
   .guest-dl{position:absolute;right:0;top:calc(50% + 22px);font-size:.72rem;color:var(--accent);
     text-decoration:none;letter-spacing:.04em}
   .guest-dl:hover{text-decoration:underline}
-  @media (max-width:700px){.home-btn,.role-pill,.guest-dl{position:static;transform:none}}
+  .save-btn{position:absolute;right:0;top:calc(50% + 18px);display:none;background:var(--card);
+    border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:8px 16px;
+    font-size:.85rem;font-family:inherit;cursor:pointer}
+  .save-btn:hover{color:var(--text);border-color:var(--accent)}
+  .save-btn.dirty{background:#2a2410;border-color:var(--accent);color:var(--accent);
+    font-weight:700;animation:savepulse 1.6s ease-in-out infinite}
+  @keyframes savepulse{50%{box-shadow:0 0 14px #f0c04088}}
+  #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:60;display:none;
+    background:var(--card);border:1px solid var(--accent);border-radius:8px;color:var(--text);
+    padding:12px 18px;font-size:.85rem;max-width:min(560px,90vw);box-shadow:0 8px 30px #000c}
+  @media (max-width:700px){.home-btn,.role-pill,.guest-dl,.save-btn{position:static;transform:none}}
   .header h1{font-size:1.3rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
   .header h1 a{color:inherit;text-decoration:none}
   .header .sub{font-size:.75rem;color:var(--muted);margin-top:2px}
@@ -164,7 +174,9 @@
   </div>
   <span class="livebadge" id="liveBadge">● live</span>
   <span class="role-pill {{ 'admin' if admin else 'guest' }}" id="rolePill">{{ 'Admin' if admin else 'Guest' }}</span>
+  <button class="save-btn" id="saveBtn" title="Downloads a new copy of this file with your notes &amp; doodles inside">Save a copy</button>
 </div>
+<div id="toast"></div>
 
 <div class="page-layout">
 <div class="center-col">
@@ -695,8 +707,8 @@ cv.addEventListener('mousemove', e => {
     } else tip.style.display = 'none';
   }
 });
-cv.addEventListener('mouseup', () => { rulerDown = false; doodling = false; curStroke = null; });
-cv.addEventListener('mouseleave', () => { rulerDown = false; doodling = false; curStroke = null; tip.style.display = 'none'; });
+cv.addEventListener('mouseup', () => { if (doodling) markDirty(); rulerDown = false; doodling = false; curStroke = null; });
+cv.addEventListener('mouseleave', () => { if (doodling) markDirty(); rulerDown = false; doodling = false; curStroke = null; tip.style.display = 'none'; });
 
 function setTool(t){
   tool = (tool === t) ? 'pan' : t;
@@ -714,8 +726,8 @@ document.getElementById('toolRuler').onclick = () => setTool('ruler');
 document.getElementById('toolDoodle').onclick = () => setTool('doodle');
 document.getElementById('dRed').onclick = function(){ doodleColor = '#ff1a1a'; this.classList.add('on'); document.getElementById('dBlue').classList.remove('on'); };
 document.getElementById('dBlue').onclick = function(){ doodleColor = '#1a8fff'; this.classList.add('on'); document.getElementById('dRed').classList.remove('on'); };
-document.getElementById('dUndo').onclick = () => { (strokes[cur] || []).pop(); draw(); };
-document.getElementById('dClear').onclick = () => { strokes[cur] = []; draw(); };
+document.getElementById('dUndo').onclick = () => { (strokes[cur] || []).pop(); markDirty(); draw(); };
+document.getElementById('dClear').onclick = () => { strokes[cur] = []; markDirty(); draw(); };
 
 /* ---------- score panel ---------- */
 const panel = document.getElementById('dataPanel'), sharedBar = document.getElementById('sharedCardsBar');
@@ -1010,7 +1022,7 @@ function wireNotes(){
     ta.value = NOTES[k] || '';
     if (readonly){ ta.readOnly = true; continue; }
     ta.addEventListener('input', () => {
-      if (EMBEDDED) return;   // offline copy: edits are yours alone, nothing to save to
+      if (EMBEDDED){ markDirty(); return; }   // offline copy: edits live in the file
       clearTimeout(noteTimers[k]);
       noteTimers[k] = setTimeout(() => {
         fetch('/api/notes', {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -1128,6 +1140,51 @@ function pollLive(){
 // Their file, their rules (Fendi, 2026-07-05): an offline copy is fully editable
 // and can SAVE — it rewrites its own embedded data block (notes + doodles) and
 // re-downloads itself as a new self-contained file. No server involved.
+// Idiot-proofing (Fendi, 2026-07-06): browsers can't overwrite local files, so
+// unsaved edits are guarded three ways — a pulsing header button, a leave-page
+// warning, and a localStorage draft that auto-restores on the next open.
+let dirty = false, draftTimer = null;
+const DRAFT_KEY = 'sb_draft_' + SLUG;
+function toast(msg, ms){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display = 'block';
+  clearTimeout(t._hide);
+  t._hide = setTimeout(() => { t.style.display = 'none'; }, ms || 8000);
+}
+function markDirty(){
+  if (!EMBEDDED) return;
+  dirty = true;
+  const btn = document.getElementById('saveBtn');
+  btn.classList.add('dirty'); btn.textContent = '● Save your edits';
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveDraft, 800);
+}
+function saveDraft(){
+  const notes = {};
+  for (const k of NOTE_KEYS){
+    const ta = document.getElementById('note_' + k);
+    if (ta) notes[k] = ta.value;
+  }
+  // localStorage can be unavailable on file:// in some configs — it's only a net
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ts: Date.now(), notes: notes, strokes: strokes})); }
+  catch (e) {}
+}
+function restoreDraft(){
+  let d = null;
+  try { d = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null'); } catch (e) {}
+  if (!d) return;
+  for (const [k, v] of Object.entries(d.notes || {})){
+    const ta = document.getElementById('note_' + k);
+    if (ta && v != null) ta.value = v;
+  }
+  (d.strokes || []).forEach((s, i) => { if (s && s.length) strokes[i] = s; });
+  draw();
+  markDirty();
+  toast('Restored unsaved edits from your last visit — click "Save your edits" to keep them in a file.', 12000);
+}
+window.addEventListener('beforeunload', e => {
+  if (EMBEDDED && dirty){ e.preventDefault(); e.returnValue = ''; }
+});
 function saveOfflineCopy(){
   const notes = {};
   for (const k of NOTE_KEYS){
@@ -1139,6 +1196,10 @@ function saveOfflineCopy(){
   data.strokes = strokes;
   document.getElementById('embeddedData').textContent =
     'window.EMBEDDED_DATA = ' + JSON.stringify(data).replace(/<\//g, '<\\/') + ';';
+  // serialize with the header button and toast in their clean state
+  const btn = document.getElementById('saveBtn');
+  btn.classList.remove('dirty'); btn.textContent = 'Save a copy';
+  document.getElementById('toast').style.display = 'none';
   const blob = new Blob(['<!DOCTYPE html>\n' + document.documentElement.outerHTML],
                         {type: 'text/html'});
   const a = document.createElement('a');
@@ -1146,6 +1207,11 @@ function saveOfflineCopy(){
   a.download = 'snapshotbot_' + SLUG + '_annotated.html';
   a.click();
   URL.revokeObjectURL(a.href);
+  dirty = false;
+  try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+  btn.textContent = '✓ Saved to Downloads';
+  setTimeout(() => { if (!dirty) btn.textContent = 'Save a copy'; }, 4000);
+  toast('Saved a new file to your Downloads folder — that file now carries your notes & doodles. This open page and the old file stay as they were.');
 }
 
 if (EMBEDDED){
@@ -1153,6 +1219,7 @@ if (EMBEDDED){
   ingest(EMBEDDED.session, true);
   if (EMBEDDED.strokes) EMBEDDED.strokes.forEach((s, i) => { strokes[i] = s || []; });
   draw();
+  restoreDraft();
 } else {
   fetch(`/api/session/${SLUG}/data`)
     .then(r => r.json())
@@ -1163,6 +1230,9 @@ if (EMBEDDED){
   document.getElementById('dlWrap').style.display = 'none';
   document.getElementById('saveWrap').style.display = '';
   document.getElementById('saveLink').onclick = e => { e.preventDefault(); saveOfflineCopy(); };
+  const sb = document.getElementById('saveBtn');
+  sb.style.display = 'block';
+  sb.onclick = saveOfflineCopy;
   document.getElementById('homeBtn').style.display = 'none';   // no server to go home to
   const rp = document.getElementById('rolePill');
   rp.className = 'role-pill guest'; rp.textContent = 'Offline copy';
