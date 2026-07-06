@@ -1123,7 +1123,13 @@ function ingest(sess, first){
     if (sess.title) document.title = sess.title + ' — Snapshotbot';
     document.getElementById('armyLabelLeft').textContent = (META.red_player || 'Red') + ' Army List';
     document.getElementById('armyLabelRight').textContent = (META.blue_player || 'Blue') + ' Army List';
-    show(FRAMES.length - 1);
+    // finished games open at the start of the first player turn; live ones follow the table
+    let start = FRAMES.length - 1;
+    if (ENDED){
+      const i = FRAMES.findIndex(f => (f.round || 0) >= 1);
+      if (i >= 0) start = i;
+    }
+    show(start);
   } else if (sess.snapshots.length){
     renderBookmarks();
     if (wasAtEnd && !playing) show(FRAMES.length - 1); else show(cur);
