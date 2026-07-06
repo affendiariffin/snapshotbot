@@ -71,7 +71,11 @@
   .howto li b{color:var(--accent);font-weight:600}
   .howto code{background:var(--card);border:1px solid var(--border);border-radius:4px;
     padding:1px 6px;font-size:.78rem;color:var(--text)}
-  .howto-note{color:var(--muted);font-size:.78rem;margin-top:8px}
+  .howto-note{color:var(--muted);font-size:.78rem;margin-top:10px;border-top:1px solid var(--border);
+    padding-top:9px}
+  .howto-note b{color:var(--text);font-weight:600}
+  .notes-head{letter-spacing:.06em;text-transform:uppercase;font-size:.72rem;margin-bottom:4px}
+  .howto-note ul{margin-left:20px;display:flex;flex-direction:column;gap:3px}
   .credits{font-size:.7rem;color:var(--muted);text-align:center;margin-top:26px}
   .credits a{color:var(--muted)}
   @media (max-width:600px){.session{flex-wrap:wrap}.acts{width:100%;justify-content:flex-end}}
@@ -122,9 +126,14 @@
     <li><b>Play</b> — the token finds the table and posts your replay link in chat (and a Notebook tab) within seconds, then records the whole game by itself. Open the link mid-game for a live scoreboard.</li>
     <li><b>Keep</b> — finished games appear on this page for 30 days (newest 10 kept); use <b>download</b> on any game for a permanent offline copy that works without this site.</li>
   </ol>
-  <div class="howto-note">Current token version: <b>{{ token_version }}</b> — your token shows its version on hover
-    and announces in chat when a newer one is out; just redownload and replace the file.<br>
-    Records up to 3 tables at once — if it's at capacity the token says so in chat and keeps retrying by itself.</div>
+  <div class="howto-note">
+    <div class="notes-head">Notes:</div>
+    <ul>
+      <li><b>LCT mod only</b> — the token does nothing on other tables.</li>
+      <li>Current version <b>{{ token_version }}</b> — hover your token in TTS to see its version; it announces in chat when a newer one is out. Redownload &amp; replace the file to update.</li>
+      <li>Up to 3 tables record at once — at capacity the token says so in chat and retries by itself.</li>
+    </ul>
+  </div>
 </div>
 <div class="credits">
   board renders: <a href="https://rapidingress.com" target="_blank">rapidingress.com</a> ·
