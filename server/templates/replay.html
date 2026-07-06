@@ -32,16 +32,18 @@
     border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:7px 14px;
     font-size:.8rem;text-decoration:none;letter-spacing:.05em}
   .home-btn:hover{color:var(--text);border-color:var(--accent)}
-  .role-pill{position:absolute;right:0;top:50%;transform:translateY(-50%);border-radius:12px;
-    padding:4px 12px;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase}
+  .header-right{position:absolute;right:0;top:50%;transform:translateY(-50%);
+    display:flex;align-items:center;gap:8px}
+  .role-pill{border-radius:12px;padding:4px 12px;font-size:.72rem;letter-spacing:.08em;
+    text-transform:uppercase;white-space:nowrap}
   .role-pill.admin{background:#2a2410;border:1px solid #6a5a20;color:var(--accent)}
   .role-pill.guest{background:var(--panel);border:1px solid var(--border);color:var(--muted)}
-  .guest-dl{position:absolute;right:0;top:calc(50% + 22px);font-size:.72rem;color:var(--accent);
-    text-decoration:none;letter-spacing:.04em}
+  .guest-dl{font-size:.72rem;color:var(--accent);text-decoration:none;letter-spacing:.04em;
+    white-space:nowrap}
   .guest-dl:hover{text-decoration:underline}
-  .save-btn{position:absolute;right:0;top:calc(50% + 18px);display:none;background:var(--card);
-    border:1px solid var(--border);color:var(--muted);border-radius:6px;padding:8px 16px;
-    font-size:.85rem;font-family:inherit;cursor:pointer}
+  .save-btn{display:none;background:var(--card);border:1px solid var(--border);
+    color:var(--muted);border-radius:6px;padding:8px 16px;font-size:.85rem;
+    font-family:inherit;cursor:pointer;white-space:nowrap}
   .save-btn:hover{color:var(--text);border-color:var(--accent)}
   .save-btn.dirty{background:#2a2410;border-color:var(--accent);color:var(--accent);
     font-weight:700;animation:savepulse 1.6s ease-in-out infinite}
@@ -49,7 +51,7 @@
   #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:60;display:none;
     background:var(--card);border:1px solid var(--accent);border-radius:8px;color:var(--text);
     padding:12px 18px;font-size:.85rem;max-width:min(560px,90vw);box-shadow:0 8px 30px #000c}
-  @media (max-width:700px){.home-btn,.role-pill,.guest-dl,.save-btn{position:static;transform:none}}
+  @media (max-width:700px){.home-btn,.header-right{position:static;transform:none}}
   .header h1{font-size:1.3rem;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
   .header h1 a{color:inherit;text-decoration:none}
   .header .sub{font-size:.75rem;color:var(--muted);margin-top:2px}
@@ -173,8 +175,10 @@
     <div class="sub" id="headerSub">loading…</div>
   </div>
   <span class="livebadge" id="liveBadge">● live</span>
-  <span class="role-pill {{ 'admin' if admin else 'guest' }}" id="rolePill">{{ 'Admin' if admin else 'Guest' }}</span>
-  <button class="save-btn" id="saveBtn" title="Downloads a new copy of this file with your notes &amp; doodles inside">Save a copy</button>
+  <span class="header-right" id="headerRight">
+    <button class="save-btn" id="saveBtn" title="Downloads a new copy of this file with your notes &amp; doodles inside">Save a copy</button>
+    <span class="role-pill {{ 'admin' if admin else 'guest' }}" id="rolePill">{{ 'Admin' if admin else 'Guest' }}</span>
+  </span>
 </div>
 <div id="toast"></div>
 
@@ -1234,8 +1238,8 @@ if (EMBEDDED){
   sb.style.display = 'block';
   sb.onclick = saveOfflineCopy;
   document.getElementById('homeBtn').style.display = 'none';   // no server to go home to
-  const rp = document.getElementById('rolePill');
-  rp.className = 'role-pill guest'; rp.textContent = 'Offline copy';
+  // the save button IS the offline-copy affordance; the pill would just repeat it
+  document.getElementById('rolePill').style.display = 'none';
 } else {
   document.getElementById('dlLink').href = '/r/' + SLUG + '/download';
   if (!ADMIN){
@@ -1244,7 +1248,8 @@ if (EMBEDDED){
     a.className = 'guest-dl';
     a.href = '/r/' + SLUG + '/download';
     a.innerHTML = '&#8681; download to edit';
-    document.querySelector('.header').appendChild(a);
+    const hr = document.getElementById('headerRight');
+    hr.insertBefore(a, hr.firstElementChild);
   }
 }
 
