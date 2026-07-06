@@ -6,6 +6,7 @@
      (never onUpdate — TTS crashes on cross-object access there). --]]
 
 SERVER_URL = "https://snapshotbot-production.up.railway.app"
+TOKEN_VERSION = "dev"   -- stamped by build_saved_object.py (date + code hash)
 POLL_SECONDS = 5        -- state check cadence; posts only on actual change
 FORCE_POST_SECONDS = 60 -- heartbeat: post at least this often while a session runs
 
@@ -799,6 +800,23 @@ end
 ---------------------------------------------------------------------------
 -- Lifecycle
 ---------------------------------------------------------------------------
+-- Downloaded tokens age on people's disks: ask the server (which always serves
+-- the latest build) whether this one is stale, and say so in chat once per load.
+function checkVersion()
+    pcall(function()
+        WebRequest.get(SERVER_URL .. "/api/version", function(req)
+            pcall(function()
+                if req.is_error or req.response_code >= 400 then return end
+                local ok, d = pcall(JSON.decode, req.text)
+                if ok and d and d.version and d.version ~= TOKEN_VERSION then
+                    log("this token is version " .. TOKEN_VERSION .. "; " .. d.version
+                        .. " is out — redownload from " .. SERVER_URL, RED)
+                end
+            end)
+        end)
+    end)
+end
+
 function onDestroy()
     -- Manual deletion is a legitimate way to stop recording: kill the timers,
     -- leave the session to seal itself server-side (~90s of silence).
@@ -826,6 +844,7 @@ function onLoad(saved)
     -- come from who-drops-models, and the session seals itself server-side after
     -- ~90s of silence (players left TTS).
     Wait.time(function() dedupeCheck() end, 2)  -- early check, before the first poll
+    Wait.time(checkVersion, 4)
     pollTimerId = Wait.time(onPollTick, POLL_SECONDS, -1)
     if sessionSlug ~= nil then
         publishLink()

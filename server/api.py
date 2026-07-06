@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import os
 import re
 import time
@@ -53,6 +54,30 @@ def _rate_limited(bucket):
 
 def _bad(msg, code=400):
     return jsonify({"ok": False, "error": msg}), code
+
+
+# The served download IS the latest token build; its stamped TOKEN_VERSION is
+# the canonical current version. Tokens self-check against this on load.
+_token_version = None
+
+
+def token_version():
+    global _token_version
+    if _token_version is None:
+        path = os.path.join(os.path.dirname(__file__), "static", "snapshotbot-v2.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                lua = json.load(f)["ObjectStates"][0]["LuaScript"]
+            m = re.search(r'TOKEN_VERSION = "([^"]+)"', lua)
+            _token_version = m.group(1) if m else "unknown"
+        except (OSError, KeyError, IndexError, ValueError):
+            _token_version = "unknown"
+    return _token_version
+
+
+@api.get("/api/version")
+def version():
+    return jsonify({"ok": True, "version": token_version()})
 
 
 @api.post("/api/session/start")

@@ -9,7 +9,7 @@ from flask import Flask, Response, jsonify, redirect, render_template, request
 from PIL import Image, ImageDraw
 
 from server import db, meshgeom
-from server.api import ADMIN_KEY, api, is_admin
+from server.api import ADMIN_KEY, api, is_admin, token_version
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
@@ -83,7 +83,8 @@ def _admin_view():
 
 @app.get("/")
 def index():
-    return render_template("index.html", sessions=db.list_sessions(), admin=_admin_view())
+    return render_template("index.html", sessions=db.list_sessions(), admin=_admin_view(),
+                           token_version=token_version())
 
 
 def _og_card(bundle, slug):
