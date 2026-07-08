@@ -184,6 +184,8 @@
 
 <div class="page-layout">
 <div class="center-col">
+<div id="staleBanner" style="display:none;background:#3a1518;border:1px solid #b33;color:#f0b7bb;
+  border-radius:6px;padding:10px 14px;margin-bottom:10px;font-size:.9rem"></div>
 <div id="sharedCardsBar"></div>
 <div class="viewer-wrap">
 <div class="board-wrap">
@@ -1139,7 +1141,27 @@ function ingest(sess, first){
   applyDerivedArmy();
   requestGeom();
   document.getElementById('liveBadge').classList.toggle('on', !ENDED);
+  staleCheck();
   if (!ENDED) setTimeout(pollLive, 5000);
+}
+// Failsafe surface: a session that sealed before round 4 probably died rather
+// than finished (token deleted, script killed, host crashed). Tell whoever is
+// watching, and keep polling slowly — a respawned token re-adopts the session,
+// and this page should come back to life with it (no F5 needed).
+let staleWatch = 0;
+function staleCheck(){
+  const el = document.getElementById('staleBanner');
+  if (EMBEDDED){ el.style.display = 'none'; return; }
+  const lastRound = FRAMES.length ? (FRAMES[FRAMES.length - 1].round || 0) : 0;
+  const suspicious = ENDED && FRAMES.length > 0 && lastRound < 4;
+  el.style.display = suspicious ? '' : 'none';
+  if (suspicious){
+    el.textContent = `⚠ Recording stopped at round ${lastRound} — if this game is still `
+      + `being played, respawn the Snapshotbot token in TTS and it will resume here.`;
+    if (staleWatch++ < 60) setTimeout(pollLive, 30000);   // ~30 min of slow watching
+  } else {
+    staleWatch = 0;
+  }
 }
 function pollLive(){
   fetch(`/api/session/${SLUG}/data?after=${lastSnapId}`)

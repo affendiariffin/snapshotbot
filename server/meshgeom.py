@@ -69,29 +69,56 @@ def _base_size(verts):
     return {"wh": [round(w, 2), round(h, 2)]}
 
 
+def _norm_children(spec):
+    # Old flat spec (single child) and new nested `children` list share one path.
+    if spec.get("children"):
+        return spec["children"]
+    if spec.get("child_mesh"):
+        return [{"mesh": spec["child_mesh"], "rot": spec.get("child_rot") or 0,
+                 "x": spec.get("child_x") or 0, "z": spec.get("child_z") or 0,
+                 "scale": spec.get("child_scale") or 1}]
+    return []
+
+
+def _xform(tri, node):
+    # One level of TTS child transform on already-mirrored 2D points: scale, then
+    # Unity clockwise-from-above yaw, then offset. Same math the single-child
+    # pipeline was calibrated with live 2026-07-04.
+    ry = math.radians(node.get("rot") or 0)
+    s = node.get("scale") or 1
+    ox, oz = node.get("x") or 0, node.get("z") or 0
+    cosr, sinr = math.cos(ry), math.sin(ry)
+    return tuple((px * s * cosr + pz * s * sinr + ox,
+                  -(px * s) * sinr + pz * s * cosr + oz) for px, pz in tri)
+
+
+def _subtree_tris(node, fetch):
+    # Node's own mesh + its descendants, in the node's local frame. Mirror the OBJ
+    # x axis first (right-handed OBJ -> Unity left-handed); child offsets are
+    # already Unity-frame so they apply as-is at every level.
+    v, f = _parse_obj(fetch(node["mesh"]))
+    tris = [tuple((-v[i][0], v[i][2]) for i in t) for t in f]
+    for ch in node.get("children") or []:
+        for tri in _subtree_tris(ch, fetch):
+            tris.append(_xform(tri, ch))
+    return tris
+
+
 def _triangles(spec, fetch=_fetch):
-    # Parent mesh (base disc or whole sculpt) + optional child sculpt transformed
-    # into the parent's frame, projected to the XZ plane.
-    # TTS imports OBJ meshes with the x axis NEGATED (right-handed OBJ -> Unity
-    # left-handed), so mirror first, THEN apply the child yaw (Unity yaw is
-    # clockwise viewed from above). Calibrated live vs the table 2026-07-04.
+    # Parent mesh (base disc or whole sculpt) + the full child tree transformed
+    # into the parent's frame, projected to the XZ plane. Flight-stand vehicles
+    # carry the hull as a second child (with grandchildren) — the whole tree
+    # renders, or a Raider is just a disc + stand.
     pv, pf = _parse_obj(fetch(spec["mesh"]))
     tris = [tuple((-pv[i][0], pv[i][2]) for i in t) for t in pf]
     base = _base_size(pv)
+    children = _norm_children(spec)
     # A disc parent is a true measured base; a bottom slice of a single-mesh sculpt
     # is a guess (poses spread low geometry) — the viewer ranks it below the guide.
-    base["disc"] = bool(spec.get("child_mesh"))
-    if spec.get("child_mesh"):
-        cv, cf = _parse_obj(fetch(spec["child_mesh"]))
-        ry = math.radians(spec.get("child_rot") or 0)
-        cs = spec.get("child_scale") or 1
-        cx, cz = spec.get("child_x") or 0, spec.get("child_z") or 0
-        cosr, sinr = math.cos(ry), math.sin(ry)
-        for a, b, c in cf:
-            tris.append(tuple(
-                ((-v[0] * cs) * cosr + v[2] * cs * sinr + cx,
-                 -(-v[0] * cs) * sinr + v[2] * cs * cosr + cz)
-                for v in (cv[a], cv[b], cv[c])))
+    base["disc"] = bool(children)
+    for ch in children:
+        for tri in _subtree_tris(ch, fetch):
+            tris.append(_xform(tri, ch))
     return base, tris
 
 

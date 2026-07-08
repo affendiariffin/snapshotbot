@@ -33,7 +33,7 @@ def is_admin():
 _BUCKETS = {}
 _LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60, "geom": 30, "admin": 20}
 
-GEOM_KEY_RE = re.compile(r"^\d{1,25}(-\d{1,25})?$")
+GEOM_KEY_RE = re.compile(r"^\d{1,25}(-\d{1,25}){0,6}$")
 CARD_KEY_RE = re.compile(r"^[a-z0-9]{1,80}$")
 
 NOTE_KEYS = {"deployment", "round1", "round2", "round3", "round4", "round5",
@@ -90,6 +90,12 @@ def session_start():
         return _bad("mission_meta must be an object")
     db.expire_old_sessions()
     db.finalize_stale_sessions()
+    # Respawned-token failsafe: rejoin the interrupted game instead of splitting
+    # it across two replays (also exempt from the capacity gate — resuming a
+    # recording doesn't add one).
+    adopt = db.find_adoptable_session(meta)
+    if adopt:
+        return jsonify({"ok": True, "slug": adopt, "path": "/r/" + adopt, "resumed": True})
     if db.count_live_sessions() >= MAX_LIVE:
         return _bad(f"at capacity ({MAX_LIVE} games recording) — will retry", 429)
     slug = db.create_session(meta)
@@ -191,15 +197,48 @@ def geom_submit():
     if not isinstance(mesh, str) or not mesh.startswith("http"):
         return _bad("bad mesh url")
     spec = {"mesh": mesh[:500], "name": str(body.get("name") or "")[:100]}
-    child = body.get("child_mesh")
-    if isinstance(child, str) and child.startswith("http"):
-        spec["child_mesh"] = child[:500]
-        for k in ("child_rot", "child_x", "child_z", "child_scale"):
-            v = body.get(k)
-            if isinstance(v, (int, float)) and abs(v) < 1e6:
-                spec[k] = v
+    kids = _clean_children(body.get("children"), [0])
+    if kids:
+        spec["children"] = kids
+    else:
+        # Legacy flat single-child spec (tokens in the wild predating children[]).
+        child = body.get("child_mesh")
+        if isinstance(child, str) and child.startswith("http"):
+            spec["child_mesh"] = child[:500]
+            for k in ("child_rot", "child_x", "child_z", "child_scale"):
+                v = body.get(k)
+                if isinstance(v, (int, float)) and abs(v) < 1e6:
+                    spec[k] = v
     meshgeom.enqueue(key, spec["name"], spec)
     return jsonify({"ok": True})
+
+
+def _clean_children(nodes, count, depth=1):
+    # Mirror of the token's childSpecs walk: ≤6 descendants, ≤3 deep, http meshes,
+    # finite numbers. Anything malformed is dropped, not rejected — the parent
+    # mesh alone still yields a usable (if worse) silhouette.
+    if not isinstance(nodes, list) or depth > 3:
+        return None
+    out = []
+    for n in nodes:
+        if count[0] >= 6:
+            break
+        if not isinstance(n, dict):
+            continue
+        mesh = n.get("mesh")
+        if not isinstance(mesh, str) or not mesh.startswith("http"):
+            continue
+        count[0] += 1
+        node = {"mesh": mesh[:500]}
+        for k in ("rot", "x", "z", "scale"):
+            v = n.get(k)
+            if isinstance(v, (int, float)) and abs(v) < 1e6:
+                node[k] = v
+        kids = _clean_children(n.get("children"), count, depth + 1)
+        if kids:
+            node["children"] = kids
+        out.append(node)
+    return out or None
 
 
 @api.get("/api/geom/status")

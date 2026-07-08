@@ -10,6 +10,7 @@ from PIL import Image, ImageDraw
 
 from server import db, meshgeom
 from server.api import ADMIN_KEY, api, is_admin, token_version
+from server.zones import layout_key, layouts_meta
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
@@ -19,43 +20,6 @@ app.register_blueprint(api)
 if os.environ.get("DATABASE_URL"):
     db.init_db()
     meshgeom.resume_pending()
-
-DISP_CODES = {
-    "Take and Hold": "TH", "Purge the Foe": "PF", "Disruption": "DI",
-    "Reconnaissance": "RE", "Priority Assets": "PA",
-}
-# Map-card-name abbreviations (LCT deck naming) — fallback when dispositions are unset.
-MAP_ABBREVS = {"TnH": "TH", "PtF": "PF", "Dis": "DI", "Rec": "RE", "Recon": "RE", "PA": "PA"}
-CODE_ORDER = ["TH", "PF", "DI", "RE", "PA"]
-
-_layouts_meta = None
-
-
-def layouts_meta():
-    global _layouts_meta
-    if _layouts_meta is None:
-        path = os.path.join(app.static_folder, "layouts", "layouts_meta.json")
-        with open(path, encoding="utf-8") as f:
-            _layouts_meta = json.load(f)
-    return _layouts_meta
-
-
-def layout_key(meta):
-    codes = []
-    for side in ("red_disposition", "blue_disposition"):
-        codes.append(DISP_CODES.get(meta.get(side) or ""))
-    map_name = meta.get("map") or ""
-    if not all(codes):
-        found = [MAP_ABBREVS[a] for a in re.findall(r"\b(TnH|PtF|Dis|Recon|Rec|PA)\b", map_name)]
-        if len(found) >= 2:
-            codes = found[:2]
-    if not all(codes):
-        return None
-    codes.sort(key=CODE_ORDER.index)
-    m = re.search(r"\b([123])\b", map_name)
-    letter = "ABC"[int(m.group(1)) - 1] if m else "A"
-    key = f"{codes[0]}-{codes[1]}-{letter}"
-    return key if key in layouts_meta() else None
 
 
 @app.get("/health")
@@ -104,8 +68,9 @@ def _og_card(bundle, slug):
             ("LIVE — round " if live else "round ") + str(last.get("round") or 0),
             bundle["started_at"][:10]]
     root = request.url_root.replace("http://", "https://")
+    # ?v bump = new asset to Discord's unfurl cache (v3: zone-backfilled teams).
     return {"title": title, "desc": " · ".join(bits),
-            "image": f"{root}r/{slug}/thumb.png"}
+            "image": f"{root}r/{slug}/thumb.png?v=3"}
 
 
 def _flip_sign(bundle, key):

@@ -370,6 +370,31 @@ end
 -- one serialization per model per session. Asset bundles have no mesh → nil.
 guidKey = guidKey or {}
 
+-- Assembly identity + geometry must cover the WHOLE descendant tree: flight-stand
+-- vehicles carry the hull as a SECOND child (Raider = disc + stand + hull-with-
+-- grandchild), so keying parent-child[1] collided different vehicles onto one key
+-- and baked stand-only silhouettes (found live: session 40 Raider+Venom = circles).
+MAX_GEOM_IDS = 6   -- descendant cap, mirrored in server validation + precrunch
+
+function childSpecs(list, ids, depth)
+    local out = nil
+    for _, ch in ipairs(list or {}) do
+        if #ids >= MAX_GEOM_IDS or depth > 3 then break end
+        local curl = ch.CustomMesh and ch.CustomMesh.MeshURL
+        local cid = curl and string.match(curl, "/ugc/(%d+)/")
+        if cid and ch.Transform then
+            table.insert(ids, cid)
+            local node = {mesh = curl, rot = ch.Transform.rotY or 0,
+                          x = ch.Transform.posX or 0, z = ch.Transform.posZ or 0,
+                          scale = ch.Transform.scaleX or 1}
+            node.children = childSpecs(ch.ChildObjects, ids, depth + 1)
+            out = out or {}
+            table.insert(out, node)
+        end
+    end
+    return out
+end
+
 function modelKey(obj)
     local g = obj.getGUID()
     local cached = guidKey[g]
@@ -381,10 +406,12 @@ function modelKey(obj)
     local ok, dat = pcall(function() return obj.getData() end)
     if ok and dat and dat.CustomMesh and dat.CustomMesh.MeshURL then
         local pid = string.match(dat.CustomMesh.MeshURL, "/ugc/(%d+)/")
-        local ch = dat.ChildObjects and dat.ChildObjects[1]
-        local curl = ch and ch.CustomMesh and ch.CustomMesh.MeshURL
-        local cid = curl and string.match(curl, "/ugc/(%d+)/")
-        if pid then key = cid and (pid .. "-" .. cid) or pid end
+        if pid then
+            local ids = {}
+            childSpecs(dat.ChildObjects, ids, 1)
+            key = pid
+            for _, cid in ipairs(ids) do key = key .. "-" .. cid end
+        end
     end
     guidKey[g] = key or false
     return key
@@ -612,15 +639,8 @@ function pumpGeomQueue()
                     key = modelKey(obj),
                     name = (cleanName(obj.getName())),
                     mesh = dat.CustomMesh.MeshURL,
+                    children = childSpecs(dat.ChildObjects, {}, 1),
                 }
-                local ch = dat.ChildObjects and dat.ChildObjects[1]
-                if ch and ch.CustomMesh and ch.CustomMesh.MeshURL and ch.Transform then
-                    body.child_mesh = ch.CustomMesh.MeshURL
-                    body.child_rot = ch.Transform.rotY or 0
-                    body.child_x = ch.Transform.posX or 0
-                    body.child_z = ch.Transform.posZ or 0
-                    body.child_scale = ch.Transform.scaleX or 1
-                end
                 if body.key then postJson("/api/geom", body, function() end) end
             end
         end
@@ -649,6 +669,7 @@ function dedupeCheck()
                 end
                 if theyWin then
                     log("duplicate Snapshotbot removed — one token per table is plenty", RED)
+                    quietDestroy = true  -- expected removal: no recording-stopped alarm
                     self.destruct()
                     return true
                 end
@@ -748,11 +769,68 @@ end
 -- visible hitch. TTS's single Lua thread means everyone shares our frame budget.
 polling = polling or false
 tickCount = tickCount or 0
+lastTickAt = nil
+pollStartedAt = pollStartedAt or 0
 
 function onPollTick()
+    lastTickAt = os.time()
     if polling then return end
     polling = true
+    pollStartedAt = os.time()
     startLuaCoroutine(self, "pollCo")
+end
+
+-- Status glow (Fendi, 2026-07-09): the token's highlight IS the health indicator —
+-- glanceable at the table, no Discord, no server. Green = recording (a post
+-- landed <90s ago), yellow = LCT table seen but no session yet (starting /
+-- capacity retry / first post pending), red = session live but posts failing,
+-- off = not an LCT table. highlightOn tints the outline only — Fendi's Gnarlmaw
+-- paint job stays untouched.
+glowState = glowState or "?"
+lastGlowAt = lastGlowAt or 0
+
+function updateGlow(now)
+    local s
+    if sessionSlug ~= nil then
+        s = (lastPostAt > 0 and now - lastPostAt < 90) and "ok"
+            or (lastPostAt == 0 and "wait" or "stale")
+    elseif getObjectFromGUID(SCORESHEET.guid) ~= nil then
+        s = "wait"
+    else
+        s = nil
+    end
+    if s ~= glowState then
+        glowState = s
+        if s == "ok" then self.highlightOn({0.10, 0.85, 0.25})
+        elseif s == "stale" then self.highlightOn({0.95, 0.15, 0.15})
+        elseif s == "wait" then self.highlightOn({0.95, 0.75, 0.10})
+        else self.highlightOff() end
+    end
+end
+
+-- Watchdog (j_efPv9t died silently mid-game, 2026-07-08): Wait.stopAll() from ANY
+-- cohabiting script kills our repeating timer, and a poll coroutine TTS never
+-- resumes leaves `polling` stuck true — pcall catches neither. onUpdate fires
+-- every frame straight from the engine, so it survives both; body stays trivial.
+function onUpdate()
+    local now = os.time()
+    if lastTickAt == nil then lastTickAt = now return end
+    if now - lastGlowAt >= 2 then
+        lastGlowAt = now
+        pcall(updateGlow, now)
+    end
+    if polling and now - pollStartedAt > 15 then
+        polling = false
+        pcall(remoteLog, "warn", "watchdog: stuck poll coroutine cleared")
+    end
+    if now - lastTickAt > 30 then
+        lastTickAt = now  -- moves even if re-arm fails: never error every frame
+        pcall(function()
+            if pollTimerId then pcall(Wait.stop, pollTimerId) end
+            pollTimerId = Wait.time(onPollTick, POLL_SECONDS, -1)
+            remoteLog("warn", "watchdog: poll loop re-armed")
+        end)
+    end
 end
 
 function pollCo()
@@ -819,8 +897,15 @@ end
 
 function onDestroy()
     -- Manual deletion is a legitimate way to stop recording: kill the timers,
-    -- leave the session to seal itself server-side (~90s of silence).
+    -- leave the session to seal itself server-side (~90s of silence). But an
+    -- ACCIDENTAL delete (or bagging) mid-game must not be silent — shout so the
+    -- table knows recording stopped; a respawned token re-adopts the session.
     if pollTimerId then pcall(Wait.stop, pollTimerId) end
+    if sessionSlug ~= nil and not quietDestroy then
+        pcall(broadcastToAll,
+            "[Snapshotbot] token removed — recording STOPPED. Respawn it to resume this game.",
+            RED)
+    end
     pcall(remoteLog, "info", "token removed — session will seal itself")
 end
 

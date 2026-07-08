@@ -37,26 +37,42 @@ def walk(o):
         yield from walk(c)
 
 
+def child_specs(children, ids, depth=1):
+    # Mirror of the token's childSpecs walk (≤6 descendants, ≤3 deep): the WHOLE
+    # child tree is the assembly — flight-stand vehicles carry the hull as a
+    # second child (Raider = disc + stand + hull-with-grandchild), and keying
+    # parent-child[1] collided different vehicles onto one stand-only silhouette.
+    out = []
+    for ch in children or []:
+        if len(ids) >= 6 or depth > 3:
+            break
+        curl = (ch.get("CustomMesh") or {}).get("MeshURL")
+        cid = re.search(r"/ugc/(\d+)/", curl) if curl else None
+        t = ch.get("Transform")
+        if cid and t:
+            ids.append(cid.group(1))
+            node = {"mesh": curl, "rot": t.get("rotY", 0), "x": t.get("posX", 0),
+                    "z": t.get("posZ", 0), "scale": t.get("scaleX", 1)}
+            kids = child_specs(ch.get("ChildObjects"), ids, depth + 1)
+            if kids:
+                node["children"] = kids
+            out.append(node)
+    return out
+
+
 def spec_of(o):
     cm = o.get("CustomMesh") or {}
     if not o.get("Name", "").startswith(("Custom_Model", "Figurine")) or not cm.get("MeshURL"):
         return None, None
     spec = {"mesh": cm["MeshURL"], "name": (o.get("Nickname") or "")[:100]}
-    ch = (o.get("ChildObjects") or [None])[0]
-    curl = (ch or {}).get("CustomMesh", {}).get("MeshURL") if ch else None
-    if curl and ch.get("Transform"):
-        t = ch["Transform"]
-        spec |= {"child_mesh": curl, "child_rot": t.get("rotY", 0),
-                 "child_x": t.get("posX", 0), "child_z": t.get("posZ", 0),
-                 "child_scale": t.get("scaleX", 1)}
-    # identity = the assembly (parent disc + child sculpt): discs are shared across
-    # models AND sculpt files are reused at other scales (ForceOrg's Storm Speeder
-    # is a marine sculpt at 3.9x on a 90mm disc)
     pid = re.search(r"/ugc/(\d+)/", cm["MeshURL"])
     if not pid:
         return None, None
-    cid = re.search(r"/ugc/(\d+)/", spec["child_mesh"]) if spec.get("child_mesh") else None
-    key = pid.group(1) + ("-" + cid.group(1) if cid else "")
+    ids = []
+    kids = child_specs(o.get("ChildObjects"), ids)
+    if kids:
+        spec["children"] = kids
+    key = "-".join([pid.group(1)] + ids)
     return key, spec
 
 

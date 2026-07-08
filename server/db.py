@@ -6,6 +6,8 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from server.zones import backfill_teams
+
 # Retention window for sessions and everything under them (Fendi: 30 days, no archive).
 RETENTION_DAYS = 30
 # Hard cap on stored sessions (Fendi, 2026-07-05): creating game #11 deletes the
@@ -136,6 +138,39 @@ def create_session(meta):
         raise RuntimeError("could not allocate session slug")
 
 
+def find_adoptable_session(meta):
+    # A fresh token spawning into a game whose recorder died must CONTINUE the
+    # old session, not split the game across two replays. Adopt when the same
+    # map + same seated players have a still-live session, or a recently-sealed
+    # one that never got past round 3 (a finished round-4/5 game followed by the
+    # same pairing on the same map is a rematch — that gets a fresh session).
+    m = meta.get("map")
+    rp, bp = meta.get("red_player"), meta.get("blue_player")
+    if not (m and rp and bp):
+        return None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT s.slug, s.ended_at, max(sn.round) AS max_round,"
+            " GREATEST(s.started_at, s.last_beat_at, max(sn.taken_at)) AS last_seen"
+            " FROM sb_sessions s LEFT JOIN sb_snapshots sn ON sn.session_id = s.id"
+            " WHERE s.mission_meta->>'map' = %s"
+            "  AND s.mission_meta->>'red_player' = %s"
+            "  AND s.mission_meta->>'blue_player' = %s"
+            " GROUP BY s.id ORDER BY s.started_at DESC LIMIT 1",
+            (m, rp, bp),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["ended_at"] is None:
+            return row["slug"]
+        recent = conn.execute(
+            "SELECT %s > now() - interval '3 hours' AS r", (row["last_seen"],)
+        ).fetchone()["r"]
+    if recent and (row["max_round"] or 0) < 4:
+        return row["slug"]
+    return None
+
+
 def rename_session(slug, title):
     with get_conn() as conn:
         cur = conn.execute(
@@ -254,7 +289,16 @@ def get_session_bundle(slug, after_id=0):
         notes = conn.execute(
             "SELECT cell_key, body FROM sb_notes WHERE session_id = %s", (sess["id"],)
         ).fetchall()
-        return {
+        # Zone backfill needs the deployment-era frames even on incremental polls,
+        # where the bundle window starts mid-game.
+        early = None
+        if after_id:
+            early = conn.execute(
+                "SELECT round, models FROM sb_snapshots"
+                " WHERE session_id = %s AND round < 2 ORDER BY id",
+                (sess["id"],),
+            ).fetchall()
+        bundle = {
             "slug": sess["slug"],
             "title": sess["title"],
             "started_at": sess["started_at"].isoformat(),
@@ -276,6 +320,7 @@ def get_session_bundle(slug, after_id=0):
             ],
             "notes": {n["cell_key"]: n["body"] for n in notes},
         }
+        return backfill_teams(bundle, early)
 
 
 def list_sessions(limit=100):
