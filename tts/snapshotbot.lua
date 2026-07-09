@@ -528,6 +528,11 @@ function readModels(chunked)
     local redSign = redHalfSign()
     for i, obj in ipairs(getAllObjects()) do
         if chunked and i % CHUNK == 0 then coroutine.yield(0) end
+        -- getAllObjects() is captured once, but the chunked sweep yields across
+        -- frames; an object picked up or deleted during a yield leaves a destroyed
+        -- reference. Touching it throws a host NRE that escapes pcall and aborts
+        -- pollCo (Fendi, 2026-07-09) — skip vanished objects so the sweep finishes.
+        if obj == nil or obj.isDestroyed() then goto continue end
         local tname = obj.name
         if tname == "Custom_Token" and not obj.getLock() then
             local p = obj.getPosition()
@@ -607,6 +612,7 @@ function readModels(chunked)
                 end
             end
         end
+        ::continue::
     end
     -- One claimed model colours its whole yellowscribe unit (dropping a single
     -- infiltrator claims the squad); persists so the claim is sticky.

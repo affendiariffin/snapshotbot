@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw
 
 from server import db, meshgeom
 from server.api import ADMIN_KEY, api, is_admin, token_version
-from server.zones import layout_key, layouts_meta
+from server.zones import layout_key_from_bundle, layouts_meta
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
@@ -219,7 +219,7 @@ def replay_thumb(slug):
     bundle = db.get_session_bundle(slug)
     if bundle is None:
         return "unknown session", 404
-    key = layout_key(bundle["mission_meta"])
+    key = layout_key_from_bundle(bundle)
     base_path = os.path.join(app.static_folder, "layouts", "png", f"{key}.png")
     if not key or not os.path.exists(base_path) or not bundle["snapshots"]:
         return redirect("/static/og-banner.png")
@@ -255,7 +255,7 @@ def replay(slug):
     bundle = db.get_session_bundle(slug)
     if bundle is None:
         return "Unknown or expired session (replays keep for 30 days).", 404
-    key = layout_key(bundle["mission_meta"])
+    key = layout_key_from_bundle(bundle)
     lay = layouts_meta().get(key) if key else None
     cards_rev, geom_rev = db.asset_revs()
     return render_template(
@@ -278,7 +278,7 @@ def replay_download(slug):
     bundle = db.get_session_bundle(slug)
     if bundle is None:
         return "Unknown or expired session (replays keep for 30 days).", 404
-    key = layout_key(bundle["mission_meta"])
+    key = layout_key_from_bundle(bundle)
     lay = layouts_meta().get(key) if key else None
     keys = {m.get("g") for s in bundle["snapshots"] for m in (s.get("models") or []) if m.get("g")}
     layout_svg = None

@@ -42,6 +42,79 @@ def layout_key(meta):
     return key if key in layouts_meta() else None
 
 
+# --- Layout inference from the table (loose cards) ---------------------------
+# mission_meta is frozen at session-start; if the map card / dispositions weren't
+# set yet it's wrong (Fendi's Purge-vs-Recon game, 2026-07-09, froze as PF-DI-A
+# with an empty map). The cards physically on the table are ground truth: the map
+# card ("PtF vs Recon 2 - Dawn of War") gives BOTH the disposition pair and the
+# A/B/C letter; the primary-mission cards (Consecrate / Triangulation) pin the
+# pair on their own when no map card is face-up.
+_ABBR = {a.lower(): c for a, c in MAP_ABBREVS.items()}
+_MAP_CARD_RE = re.compile(
+    r"\b(TnH|PtF|Dis|Recon|Rec|PA)\s+vs\s+(TnH|PtF|Dis|Recon|Rec|PA)\s+([123])\b", re.I)
+_primary_pairs = None
+
+
+def _key_from_map_card(name):
+    m = _MAP_CARD_RE.search(name or "")
+    if not m:
+        return None
+    codes = [_ABBR.get(m.group(1).lower()), _ABBR.get(m.group(2).lower())]
+    if not all(codes):
+        return None
+    codes.sort(key=CODE_ORDER.index)
+    key = f"{codes[0]}-{codes[1]}-{'ABC'[int(m.group(3)) - 1]}"
+    return key if key in layouts_meta() else None
+
+
+def _primary_pair_map():
+    # frozenset(primary mission names) -> disposition pair ("PF-RE"). Collision-free
+    # across the layout library — each pairing has a unique pair of primaries.
+    global _primary_pairs
+    if _primary_pairs is None:
+        _primary_pairs = {}
+        for k, v in layouts_meta().items():
+            prims = frozenset(str(x).strip() for x in (v.get("missions") or {}).values())
+            if len(prims) >= 2:
+                _primary_pairs[prims] = "-".join(k.split("-")[:2])
+    return _primary_pairs
+
+
+def _dpair_from_primaries(loose):
+    pairs = _primary_pair_map()
+    universe = set().union(*pairs.keys()) if pairs else set()
+    present = {re.sub(r"\s+[123]$", "", (n or "").strip()) for n in loose}
+    present &= universe
+    hits = [dp for prims, dp in pairs.items() if prims <= present]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _loose_names(bundle):
+    names = set()
+    for s in bundle.get("snapshots") or []:
+        for c in (s.get("cards") or {}).get("loose") or []:
+            if isinstance(c, dict) and c.get("n"):
+                names.add(c["n"])
+    return names
+
+
+def layout_key_from_bundle(bundle):
+    # Prefer what's on the table over the frozen session-start meta.
+    loose = _loose_names(bundle)
+    for n in loose:
+        k = _key_from_map_card(n)          # map card: dispositions + letter
+        if k:
+            return k
+    dpair = _dpair_from_primaries(loose)   # primaries: dispositions only
+    if dpair:
+        d = re.search(r"\b([123])\b", (bundle.get("mission_meta") or {}).get("map") or "")
+        for n in ([d.group(1)] if d else []) + ["1", "2", "3"]:
+            key = f"{dpair}-{'ABC'[int(n) - 1]}"
+            if key in layouts_meta():
+                return key
+    return layout_key(bundle.get("mission_meta") or {})
+
+
 def _in_poly(x, z, poly):
     inside = False
     j = len(poly) - 1
@@ -61,7 +134,7 @@ def backfill_teams(bundle, early=None):
     # with zero claims red-vs-blue is a coin flip, and a wrong colour is worse
     # than an honest grey (Fendi, 2026-07-05). Zone shapes come from the layout
     # SVGs (red_poly/blue_poly, world inches, red on the SVG's baked side).
-    lay = layouts_meta().get(layout_key(bundle.get("mission_meta") or {}) or "")
+    lay = layouts_meta().get(layout_key_from_bundle(bundle) or "")
     if not lay or not lay.get("red_poly") or not lay.get("blue_poly"):
         return bundle
     if early is None:
