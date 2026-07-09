@@ -1124,8 +1124,9 @@ function ingest(sess, first){
     NOTES = sess.notes || {};
     wireNotes();
     const auto = `${META.red_player || 'Red'} vs ${META.blue_player || 'Blue'} — ${META.map || 'LCT game'}`;
+    const date = sess.started_at ? ' · ' + sess.started_at.slice(0, 10) : '';
     document.getElementById('headerSub').textContent =
-      (sess.title ? sess.title + ' · ' : '') + auto + (EMBEDDED ? ' · offline copy' : '');
+      (sess.title ? sess.title + ' · ' : '') + auto + date + (EMBEDDED ? ' · offline copy' : '');
     if (sess.title) document.title = sess.title + ' — Snapshotbot';
     document.getElementById('armyLabelLeft').textContent = (META.red_player || 'Red') + ' Army List';
     document.getElementById('armyLabelRight').textContent = (META.blue_player || 'Blue') + ' Army List';
