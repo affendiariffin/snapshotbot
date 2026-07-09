@@ -825,8 +825,12 @@ function renderPanel(){
   const sc = f.scores || {}, cd = deriveCards(f.cards || {});
   const p1 = sc.red || {}, p2 = sc.blue || {};
   const redName = META.red_player || 'Red', blueName = META.blue_player || 'Blue';
-  const disp = (META.red_disposition && META.blue_disposition)
-    ? `${META.red_disposition}  vs  ${META.blue_disposition}` : null;
+  // Prefer the card-derived layout label (LAYOUT_META) over the session-start
+  // dispositions, which are frozen and can be stale/wrong; fall back to the raw
+  // meta only for unknown/custom maps with no layout.
+  const disp = LAYOUT_META.label
+    || (META.red_disposition && META.blue_disposition
+        ? `${META.red_disposition}  vs  ${META.blue_disposition}` : null);
   sharedBar.innerHTML = `
    <div class="shared-card"><div class="player-label">Layout</div>${pill(META.map || LAYOUT_KEY)}
      ${LAYOUT_META.label ? `<div class="atk-def">${esc(LAYOUT_META.label)}${LAYOUT_KEY ? ' · ' + LAYOUT_KEY : ''}</div>` : ''}</div>
