@@ -510,7 +510,11 @@ function readModels(chunked)
     local loose = {}
     local sigParts = {}
     local guids = {}
-    local rescan = reserveRects == nil or #reserveRects == 0
+    -- The reserves board isn't fixed: LCT's "Move Board" button toggles it between
+    -- z ~84 and z ~59.5 (staying locked). A cached rect then misses every model on
+    -- the board (off-mat + outside the rect = dropped entirely, so reserves vanish
+    -- until it toggles back). Re-scan every ~6 ticks so the rect follows the board.
+    local rescan = reserveRects == nil or #reserveRects == 0 or tickCount % 6 == 0
     if not rescan then
         for _, r in ipairs(reserveRects) do
             if r.side == nil then rescan = true end
