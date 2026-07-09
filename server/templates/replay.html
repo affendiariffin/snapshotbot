@@ -169,7 +169,7 @@
 </head>
 <body>
 <div class="header">
-  <a class="home-btn" id="homeBtn" href="/">&#8962; Home</a>
+  <a class="home-btn" id="homeBtn" href="/">&#8962; Choose Replay / Download Token</a>
   <div class="header-text">
     <h1><a href="/">Fendi's Snapshotbot</a></h1>
     <div class="sub" id="headerSub">loading…</div>
@@ -350,7 +350,7 @@ function requestGeom(){
       GEOM[k] = {status: v.status, base: v.base, sil_meta: v.sil_meta};
       if (v.png_b64 && v.sil_meta){
         const img = new Image();
-        img.onload = () => draw();
+        img.onload = () => { geomVersion++; draw(); };
         img.src = 'data:image/png;base64,' + v.png_b64;
         GEOM[k].img = img;
       }
@@ -368,7 +368,7 @@ function requestGeom(){
       GEOM[k] = v || {};
       if (v && v.status === 'done' && v.sil_meta){
         const img = new Image();
-        img.onload = () => draw();
+        img.onload = () => { geomVersion++; draw(); };
         img.src = '/api/geom/' + k + '.png?v=' + GEOM_REV;
         GEOM[k].img = img;
       }
@@ -460,6 +460,18 @@ function maybeFlip(){
 // glance. Runs inside the resolve guard: repacks when silhouettes arrive.
 const RGUT = 13;
 let HAS_RES = false;
+// Pack reserves by the drawn silhouette's footprint, not the measured base: a
+// flyer's base is the tiny flight stem, so base-sized cells clip the hull sprite
+// (blue Eldar skimmers, session c5NoKPKJ). Falls back to the base until the
+// silhouette PNG has loaded (geomVersion bumps on load → re-pack).
+function resFootprint(m){
+  const sc = m.s || 1;
+  const g = m.g && GEOM[m.g];
+  if (g && g.img && g.img.complete && g.img.naturalWidth && g.sil_meta)
+    return [g.img.naturalWidth / g.sil_meta.ppi * sc, g.img.naturalHeight / g.sil_meta.ppi * sc];
+  const b = modelBase(m);
+  return [(Array.isArray(b) ? b[0] : b) * sc, (Array.isArray(b) ? b[1] : b) * sc];
+}
 function layoutReserves(fr){
   for (const side of ['red', 'blue']){
     const list = (fr.models || []).filter(m => m.v &&
@@ -478,8 +490,7 @@ function layoutReserves(fr){
     for (const [, ms] of groups){
       let cx = 0, rowH = 0, zRow = z;
       for (const m of ms){
-        const b = modelBase(m), sc = m.s || 1;
-        const w = (Array.isArray(b) ? b[0] : b) * sc, h = (Array.isArray(b) ? b[1] : b) * sc;
+        const [w, h] = resFootprint(m);
         if (cx > 0 && cx + w > innerW){ zRow -= rowH + 0.25; cx = 0; rowH = 0; }
         m.x = xEdge + dir * (cx + w / 2);
         m.z = zRow - h / 2;
