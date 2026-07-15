@@ -219,6 +219,7 @@ function readMeta()
 end
 
 function isModelType(internalName)
+    if internalName == nil then return false end
     for _, t in ipairs(MODEL_TYPES) do
         if string.sub(internalName, 1, #t) == t then return true end
     end
@@ -536,8 +537,10 @@ function readModels(chunked)
         -- frames; an object picked up or deleted during a yield leaves a destroyed
         -- reference. Touching it throws a host NRE that escapes pcall and aborts
         -- pollCo (Fendi, 2026-07-09) — skip vanished objects so the sweep finishes.
-        if obj == nil or obj.isDestroyed() then goto continue end
-        local tname = obj.name
+        -- (No goto here: MoonSharp rejects a jump past a local declaration, so
+        -- vanished objects instead leave tname nil, which matches no branch.)
+        local tname = nil
+        if obj ~= nil and not obj.isDestroyed() then tname = obj.name end
         if tname == "Custom_Token" and not obj.getLock() then
             local p = obj.getPosition()
             if math.abs(p.x) <= MAT_X and math.abs(p.z) <= MAT_Z then
@@ -616,7 +619,6 @@ function readModels(chunked)
                 end
             end
         end
-        ::continue::
     end
     -- One claimed model colours its whole yellowscribe unit (dropping a single
     -- infiltrator claims the squad); persists so the claim is sticky.
