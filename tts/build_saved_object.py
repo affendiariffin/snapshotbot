@@ -62,10 +62,10 @@ obj = token["ObjectStates"][0]
 # The nickname is functional, not cosmetic: the duplicate-token guard and the
 # capture exclusion (EXCLUDE_SUBSTR) both match on "Snapshotbot".
 obj["Nickname"] = "Snapshotbot"
-obj["Description"] = ("Drop on an LCT table - records the game to "
+obj["Description"] = ("Drop on an LCT table — records the game to "
                       "snapshotbot-production.up.railway.app automatically. "
                       "Replay link appears in chat.\n\nVersion " + version +
-                      " - the token says in chat when a newer one is out.")
+                      " — the token says in chat when a newer one is out.")
 obj["GMNotes"] = ""            # must stay empty: "Red"/"Blue" in GMNotes means team
 obj["LuaScript"] = lua
 obj["LuaScriptState"] = ""

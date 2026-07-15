@@ -1,9 +1,13 @@
 # Compile the token Lua under TTS's OWN MoonSharp via the External Editor API
-# (the Atom/VSCode plugin protocol). We send an Execute-Lua message to Global
-# that wraps the script in load() - TTS compiles it and returns the error, if
-# any; nothing is executed. This is the only interpreter whose opinion matters:
-# standard Lua tools accept code MoonSharp rejects (goto past a local killed
-# the 2026-07-15 token at load - see docs/Architecture.md invariant).
+# (the Atom/VSCode plugin protocol). The probe is the script itself prefixed
+# with `do return 'SB_OK' end ` on the same line: MoonSharp compiles the whole
+# chunk before running anything, then the immediate return skips execution
+# entirely - safe on a live table, and TTS's sandbox has no load() (checked
+# live 2026-07-16) so wrapping was not an option. Compile failure arrives as
+# an Error message (messageID 3); line numbers match snapshotbot.lua exactly
+# because the prefix adds no newline. This is the only interpreter whose
+# opinion matters: standard Lua tools accept code MoonSharp rejects (goto
+# past a local killed the 2026-07-15 token at load).
 import json
 import socket
 import time
@@ -14,24 +18,9 @@ RETURN_ID = 991
 TIMEOUT = 12
 
 
-def _brackets(lua):
-    n = 1
-    while "]" + "=" * n + "]" in lua:
-        n += 1
-    return "[" + "=" * n + "[", "]" + "=" * n + "]"
-
-
 # -> ("ok" | "error" | "unavailable", detail)
 def check(lua):
-    op, cl = _brackets(lua)
-    # Lua drops a newline that directly follows the opening long bracket, so
-    # compile-error line numbers match snapshotbot.lua exactly.
-    probe = (
-        "if load == nil then return 'SB_NOLOAD' end\n"
-        "local f, e = load(" + op + "\n" + lua + cl + ", 'snapshotbot')\n"
-        "if f then return 'SB_OK' end\n"
-        "return 'SB_ERR ' .. tostring(e)"
-    )
+    probe = "do return 'SB_OK' end " + lua
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -71,17 +60,12 @@ def check(lua):
                 msg = json.loads(buf.decode("utf-8"))
             except ValueError:
                 continue  # prints/other chatter TTS pushes to the same port
-            if msg.get("messageID") == 3:
-                return ("unavailable", "probe itself errored in TTS: " + str(msg)[:300])
+            if msg.get("messageID") == 3 and str(msg.get("guid", "-1")) == "-1":
+                return ("error", str(msg.get("error", msg))[:500])
             if msg.get("messageID") == 5 and msg.get("returnID") in (RETURN_ID, str(RETURN_ID)):
                 val = str(msg.get("returnValue", ""))
                 if val == "SB_OK":
                     return ("ok", "")
-                if val == "SB_NOLOAD":
-                    return ("unavailable",
-                            "TTS sandbox exposes no load() - can't compile-check; verify by respawn")
-                if val.startswith("SB_ERR "):
-                    return ("error", val[7:])
                 return ("unavailable", "unexpected return: " + val[:200])
         return ("unavailable",
                 "no reply from TTS in %ss - is a table loaded (not the main menu)?" % TIMEOUT)
