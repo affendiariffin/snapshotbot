@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+from datetime import datetime
 
 from flask import Flask, Response, jsonify, redirect, render_template, request
 from PIL import Image, ImageDraw
@@ -212,6 +213,54 @@ def _draw_model(board, m, geom, unit, ppi, f):
     board.paste(tile, (int(cx - c), int(cy - c)), tile)
 
 
+def _frame_assets(frame):
+    models = [m for m in frame.get("models") or [] if not m.get("v")]
+    geom = db.geom_export({m["g"] for m in models if m.get("g")})
+    return models, geom
+
+
+def _compose_board(bundle, key, frame, models, geom, markers=False, caption=None):
+    f = _flip_sign(bundle, key)
+    board = Image.open(
+        os.path.join(app.static_folder, "layouts", "png", f"{key}.png")).convert("RGB")
+    ppi = board.width / 60  # 60x44 inch board
+    unit = {}
+    for m in models:
+        u = m.get("u")
+        if u and u not in unit:
+            b = _measured_base(m, geom, True) or _guide_base(m.get("n"))
+            if b and b != "hull":
+                unit[u] = b
+    for m in models:
+        _draw_model(board, m, geom, unit, ppi, f)
+    if markers:
+        d = ImageDraw.Draw(board)
+        for mk in frame.get("markers") or []:
+            b = mk.get("b") or 1.5
+            r = max((b[0] if isinstance(b, list) else b) / 2 * ppi, 6)
+            cx = board.width / 2 + f * mk["x"] * ppi
+            cy = board.height / 2 - f * mk["z"] * ppi
+            ring = TEAM_RING[mk["t"]] if mk.get("t") in ("red", "blue") else (232, 200, 82)
+            d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=ring, width=3)
+    if caption:
+        out = Image.new("RGB", (board.width, board.height + 30), (24, 26, 33))
+        out.paste(board, (0, 0))
+        ImageDraw.Draw(out).text((10, board.height + 9), caption, fill=(220, 224, 235))
+        board = out
+    return board
+
+
+def _png_response(ck, render):
+    if ck not in _thumb_cache:
+        buf = io.BytesIO()
+        render().save(buf, format="PNG")
+        if len(_thumb_cache) > 20:
+            _thumb_cache.clear()
+        _thumb_cache[ck] = buf.getvalue()
+    return Response(_thumb_cache[ck], mimetype="image/png",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
+
 @app.get("/r/<slug>/thumb.png")
 def replay_thumb(slug):
     # Link-preview image: the layout base render + the board at the start of the
@@ -225,29 +274,41 @@ def replay_thumb(slug):
         return redirect("/static/og-banner.png")
     frame = next((s for s in bundle["snapshots"] if (s.get("round") or 0) >= 1),
                  bundle["snapshots"][-1])
-    models = [m for m in frame.get("models") or [] if not m.get("v")]
-    geom = db.geom_export({m["g"] for m in models if m.get("g")})
+    models, geom = _frame_assets(frame)
     ck = (slug, frame["id"], len(geom))   # re-render once late silhouettes land
-    if ck not in _thumb_cache:
-        f = _flip_sign(bundle, key)
-        board = Image.open(base_path).convert("RGB")
-        ppi = board.width / 60  # 60x44 inch board
-        unit = {}
-        for m in models:
-            u = m.get("u")
-            if u and u not in unit:
-                b = _measured_base(m, geom, True) or _guide_base(m.get("n"))
-                if b and b != "hull":
-                    unit[u] = b
-        for m in models:
-            _draw_model(board, m, geom, unit, ppi, f)
-        buf = io.BytesIO()
-        board.save(buf, format="PNG")
-        if len(_thumb_cache) > 20:
-            _thumb_cache.clear()
-        _thumb_cache[ck] = buf.getvalue()
-    return Response(_thumb_cache[ck], mimetype="image/png",
-                    headers={"Cache-Control": "public, max-age=3600"})
+    return _png_response(ck, lambda: _compose_board(bundle, key, frame, models, geom))
+
+
+@app.get("/r/<slug>/frame.png")
+def replay_frame(slug):
+    # Post-game analysis frame shots: the thumb pipeline at ANY snapshot (?snap=<id>,
+    # nearest at-or-before match; default last), plus marker overlay and a caption
+    # strip (round / elapsed / score / active turn).
+    bundle = db.get_session_bundle(slug)
+    if bundle is None:
+        return "unknown session", 404
+    key = layout_key_from_bundle(bundle)
+    snaps = bundle["snapshots"]
+    if not key or not snaps or not os.path.exists(
+            os.path.join(app.static_folder, "layouts", "png", f"{key}.png")):
+        return "no layout or frames", 404
+    snap_id = request.args.get("snap", type=int)
+    frame = (snaps[-1] if snap_id is None
+             else next((s for s in reversed(snaps) if s["id"] <= snap_id), snaps[0]))
+    models, geom = _frame_assets(frame)
+
+    def render():
+        mins = round((datetime.fromisoformat(frame["taken_at"])
+                      - datetime.fromisoformat(snaps[0]["taken_at"])).total_seconds() / 60)
+        sc = frame.get("scores") or {}
+        turn = sc.get("turn") or {}
+        cap = (f"R{frame.get('round')} +{mins}m · "
+               f"red {(sc.get('red') or {}).get('total', '?')} - "
+               f"blue {(sc.get('blue') or {}).get('total', '?')}"
+               + (f" · {turn['active']} turn" if turn.get("active") else ""))
+        return _compose_board(bundle, key, frame, models, geom, markers=True, caption=cap)
+
+    return _png_response((slug, "frame", frame["id"], len(geom)), render)
 
 
 @app.get("/r/<slug>")
