@@ -775,8 +775,17 @@ function lightbox(img){
   lb.querySelector('img').src = img.src;
   lb.style.display = 'flex';
 }
-function block(cls, name, scores, primaries, secondaries, fixed){
+// WTC 20-0 conversion: VP differential in 5-point bands — 0-5 = 10-10, each
+// further 5 shifts one point, 51+ = 20-0 (checked vs worked examples 2026-07-22:
+// diff 15 → 12-8, diff 32 → 16-4).
+function wtcScore(mine, theirs){
+  if (mine == null || theirs == null) return null;
+  const w = 10 + Math.min(10, Math.max(0, Math.ceil((Math.abs(mine - theirs) - 5) / 5)));
+  return mine >= theirs ? w : 20 - w;
+}
+function block(cls, name, scores, primaries, secondaries, fixed, oppTotal){
   const s = scores || {};
+  const w = wtcScore(s.total, oppTotal);
   return `<div class="player-block ${cls}">
     <div class="player-name">&#9632; ${esc(name)}</div>
     <div class="player-label">Primary Mission — from disposition</div>
@@ -784,7 +793,7 @@ function block(cls, name, scores, primaries, secondaries, fixed){
     <div class="player-label">Secondaries — active</div>
     <div class="mcards">${(secondaries && secondaries.length ? secondaries.map(n => cardOrPill(n, fixed ? 'fixed' : 'tactical')).join('') : cardOrPill(null))}</div>
     <div class="player-total">${s.total != null ? s.total : '—'}</div>
-    <div class="total-label">Total VP${s.cp != null ? ' · ' + s.cp + ' CP' : ''}</div></div>`;
+    <div class="total-label">${w != null ? 'WTC ' + w : 'Total VP'}${s.cp != null ? ' · ' + s.cp + ' CP' : ''}</div></div>`;
 }
 // Zone capture died with LCT's tableau redesign; classify the loose face-up cards
 // instead — against CLOSED vocabularies only. Primaries = the 25 mission names
@@ -873,8 +882,8 @@ function renderPanel(){
     <td class="c-name-p2">Totals</td></tr>`;
 
   const html = `<div class="players">
-    ${block('p1', redName, p1, cd.red_primary, cd.red_secondary, p1.fixed)}
-    ${block('p2', blueName, p2, cd.blue_primary, cd.blue_secondary, p2.fixed)}
+    ${block('p1', redName, p1, cd.red_primary, cd.red_secondary, p1.fixed, p2.total)}
+    ${block('p2', blueName, p2, cd.blue_primary, cd.blue_secondary, p2.fixed, p1.total)}
   </div>
   <div class="round-table-wrap"><h3>Round by Round — 11th Edition (Primary max 45 · Secondary max 45 · Battle Ready +10 · cap 100)</h3>
   <table class="rtable">

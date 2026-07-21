@@ -89,23 +89,56 @@ def _dpair_from_primaries(loose):
     return hits[0] if len(hits) == 1 else None
 
 
-def _loose_names(bundle):
-    names = set()
+def _at_scoreboard(c):
+    # The mod's own "current map" display: the chosen map card sits by the
+    # scoresheet, off-mat at (~60.8–65, 0) in every recorded session. Selection
+    # spreads live ON the mat (|x| <= 31) and discard piles at (62.5, ±16.6),
+    # so a map card inside this box is the played one — source of truth.
+    try:
+        return 45 <= float(c.get("x")) <= 80 and abs(float(c.get("z"))) <= 8
+    except (TypeError, ValueError):
+        return False
+
+
+def _loose_stats(bundle):
+    # name -> [snapshot count, last snapshot id, scoreboard-slot count].
+    # Persistence matters: map selection leaves EVERY candidate map card
+    # face-up for a frame (session 45 caught all three PtF-vs-Recon maps plus
+    # saved-table variants in one setup snapshot), so loose-card inference must
+    # weigh where and how long a card sat — never a flat whole-session union.
+    stats = {}
     for s in bundle.get("snapshots") or []:
+        sid = s.get("id") or 0
         for c in (s.get("cards") or {}).get("loose") or []:
             if isinstance(c, dict) and c.get("n"):
-                names.add(c["n"])
-    return names
+                st = stats.setdefault(c["n"], [0, 0, 0])
+                st[0] += 1
+                st[1] = max(st[1], sid)
+                if _at_scoreboard(c):
+                    st[2] += 1
+    return stats
 
 
 def layout_key_from_bundle(bundle):
-    # Prefer what's on the table over the frozen session-start meta.
-    loose = _loose_names(bundle)
-    for n in loose:
+    # Prefer what's on the table over the frozen session-start meta. The map
+    # card at the SCOREBOARD SLOT wins outright; among equals, longest-seen
+    # (ties: latest, then name). First-match over a set was a per-process coin
+    # flip whenever setup left several map cards visible, and it fed
+    # thumb/OG/backfill the wrong layout.
+    stats = _loose_stats(bundle)
+    best = best_rank = None
+    for n, (count, last, slot) in stats.items():
         k = _key_from_map_card(n)          # map card: dispositions + letter
-        if k:
-            return k
-    dpair = _dpair_from_primaries(loose)   # primaries: dispositions only
+        if k and (best_rank is None or (slot, count, last, n) > best_rank):
+            best, best_rank = k, (slot, count, last, n)
+    if best:
+        return best
+    # Primaries: dispositions only. Transient setup cards can complete a bogus
+    # pairing, so cards seen in >1 snapshot get first say; all cards only if
+    # that stays inconclusive.
+    persistent = {n for n, st in stats.items() if st[0] > 1}
+    dpair = ((_dpair_from_primaries(persistent) if persistent else None)
+             or _dpair_from_primaries(set(stats)))
     if dpair:
         d = re.search(r"\b([123])\b", (bundle.get("mission_meta") or {}).get("map") or "")
         for n in ([d.group(1)] if d else []) + ["1", "2", "3"]:
