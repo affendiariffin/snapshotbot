@@ -519,24 +519,50 @@ function modelBase(m){
 
 // Status markers (Battle Shocked, +1 to Rolls, Objective Secured, ...): the real
 // LCT token art, bordered dark red / dark blue by which side placed it.
+// Image id (mk.i) beats the nickname: LCT misnames some tokens (its Objective
+// Secured Red/Blue bags dispense tokens NICKNAMED "Action"), so art + tooltip
+// key on what the token LOOKS like when the record carries an id.
 const MARKER_IMGS = {};
+let MARKER_NAMES = {};
+if (EMBEDDED) MARKER_NAMES = EMBEDDED.marker_names || {};
+else fetch('/static/markers/markers.json').then(r => r.json())
+  .then(d => { MARKER_NAMES = d || {}; }).catch(() => {});
 function markerKey(n){ return String(n).toLowerCase().replace(/[^a-z0-9]/g, ''); }
-function markerImg(n){
-  const k = markerKey(n);
-  if (k in MARKER_IMGS) return MARKER_IMGS[k];
+function markerCands(mk){
+  const c = [];
+  if (mk.i) c.push('i' + mk.i);
+  if (mk.bn) c.push(markerKey(mk.bn));   // dispensing bag — truthful where names lie
+  c.push(markerKey(mk.n));
+  return c;
+}
+function markerName(mk){
+  return (mk.i && MARKER_NAMES['i' + mk.i]) || mk.bn || mk.n;
+}
+function markerImg(mk){
+  const cands = markerCands(mk), ck = cands.join('|');
+  if (ck in MARKER_IMGS) return MARKER_IMGS[ck];
   if (EMBEDDED){
-    const b64 = (EMBEDDED.markers || {})[k];
-    if (!b64) return MARKER_IMGS[k] = null;
-    const img = new Image();
-    img.onload = () => draw();
-    img.src = 'data:image/png;base64,' + b64;
-    return MARKER_IMGS[k] = img;
+    for (const k of cands){
+      const b64 = (EMBEDDED.markers || {})[k];
+      if (b64){
+        const img = new Image();
+        img.onload = () => draw();
+        img.src = 'data:image/png;base64,' + b64;
+        return MARKER_IMGS[ck] = img;
+      }
+    }
+    return MARKER_IMGS[ck] = null;
   }
   const img = new Image();
+  let ci = 0;
   img.onload = () => draw();
-  img.onerror = () => { MARKER_IMGS[k] = null; };
-  img.src = '/static/markers/' + k + '.png';
-  return MARKER_IMGS[k] = img;
+  img.onerror = () => {
+    ci++;
+    if (ci < cands.length) img.src = '/static/markers/' + cands[ci] + '.png';
+    else MARKER_IMGS[ck] = null;
+  };
+  img.src = '/static/markers/' + cands[0] + '.png';
+  return MARKER_IMGS[ck] = img;
 }
 function markerDims(mk){
   return [Array.isArray(mk.b) ? mk.b[0] : 0.9, Array.isArray(mk.b) ? mk.b[1] : 0.9];
@@ -616,7 +642,7 @@ function draw(){
     const [mx, my] = W2S(mk.x, mk.z);
     const [dw, dh] = markerDims(mk);
     const w = dw * cam.scale, h = dh * cam.scale;
-    const img = markerImg(mk.n);
+    const img = markerImg(mk);
     if (img && img.complete && img.naturalWidth) ctx.drawImage(img, mx - w / 2, my - h / 2, w, h);
     else { ctx.fillStyle = '#3a3f4c'; ctx.fillRect(mx - w / 2, my - h / 2, w, h); }
     ctx.lineWidth = 2.5;
@@ -713,7 +739,7 @@ cv.addEventListener('mousemove', e => {
       tip.style.display = 'block';
       tip.style.left = (e.offsetX + 14) + 'px'; tip.style.top = (e.offsetY + 8) + 'px';
       const col = mk.t === 'red' ? '#e05555' : mk.t === 'blue' ? '#5588e0' : '#9aa2b5';
-      tip.innerHTML = '<b style="color:' + col + '">' + esc(mk.n) + '</b>' +
+      tip.innerHTML = '<b style="color:' + col + '">' + esc(markerName(mk)) + '</b>' +
         (mk.t ? '<br><span style="color:#5a6080">placed by ' + mk.t + '</span>' : '');
     } else tip.style.display = 'none';
   }

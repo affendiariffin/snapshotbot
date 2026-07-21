@@ -66,6 +66,7 @@ lastPostAt = lastPostAt or 0
 startPending = startPending or false
 teamByGuid = teamByGuid or {}  -- sticky drop-claim ownership (GMNotes overrides)
 markerSide = markerSide or {}  -- status markers: which side's rack/hand placed them
+markerBagName = markerBagName or {}  -- marker GUID -> dispensing bag name when it differs
 sentGeom = sentGeom or {}      -- mesh keys already posted this session
 geomQueue = geomQueue or {}    -- model GUIDs awaiting a one-time geometry post
 
@@ -278,14 +279,27 @@ end
 -- Status markers are dispensed from per-side racks of infinite bags: leaving a
 -- container on red's half means red placed it. More precise than the drop claim,
 -- so it overwrites; the "(Red)"/"(Blue)" name suffix wins over both at read time.
+-- The bag also names the marker truthfully where the token nickname lies (LCT's
+-- Objective Secured Red/Blue bags dispense tokens NICKNAMED "Action"), so a
+-- differing bag name is remembered as origin provenance. First claim sticky;
+-- "" = witnessed but bag agrees, so don't re-check on later dispenses.
 function onObjectLeaveContainer(container, obj)
     local ok = pcall(function()
         if obj == nil or obj.name ~= "Custom_Token" then return end
+        local g = obj.getGUID()
+        if markerBagName[g] == nil then
+            local bn = stripTags(container.getName())
+            if bn ~= "" and string.lower(bn) ~= string.lower(stripTags(obj.getName())) then
+                markerBagName[g] = bn
+            else
+                markerBagName[g] = ""
+            end
+        end
         local redSign = redHalfSign()
         if redSign == nil then return end
         local cz = container.getPosition().z
         if cz == 0 then return end
-        markerSide[obj.getGUID()] = ((cz >= 0 and 1 or -1) == redSign) and "red" or "blue"
+        markerSide[g] = ((cz >= 0 and 1 or -1) == redSign) and "red" or "blue"
     end)
     return ok
 end
@@ -337,6 +351,7 @@ end
 -- so pay them once per object, not on every poll tick.
 modelFacts = modelFacts or {}
 markerBounds = markerBounds or {}
+markerImgIds = markerImgIds or {}  -- marker GUID -> custom-image short id ("" = none)
 
 function modelFactsFor(obj, g)
     local f = modelFacts[g]
@@ -558,12 +573,31 @@ function readModels(chunked)
                         b = {round(bs.x, 1), round(bs.z, 1)}
                         markerBounds[g] = b
                     end
+                    -- Image identity: LCT misnames some tokens (the Objective
+                    -- Secured Red/Blue bags dispense tokens NICKNAMED "Action"),
+                    -- so the viewer classifies by image first, name as fallback.
+                    -- Short id = last 12 chars of the URL's final path segment.
+                    local iid = markerImgIds[g]
+                    if iid == nil then
+                        local okI, url = pcall(function()
+                            return obj.getCustomObject().image
+                        end)
+                        iid = ""
+                        if okI and type(url) == "string" then
+                            local seg = string.match(url, "(%w+)/*$")
+                            if seg then iid = string.sub(string.lower(seg), -12) end
+                        end
+                        markerImgIds[g] = iid
+                    end
+                    local bn = markerBagName[g]
                     table.insert(sigParts, string.format("%s:%.1f:%.1f", g, p.x, p.z))
                     table.insert(markers, {
                         n = name,
                         x = round(p.x, 2), z = round(p.z, 2),
                         b = b,
                         t = markerTeam(obj, name),
+                        i = iid ~= "" and iid or nil,
+                        bn = (bn ~= nil and bn ~= "") and bn or nil,
                     })
                 end
             end
@@ -923,7 +957,7 @@ end
 
 function onSave()
     return JSON.encode({slug = sessionSlug, path = sessionPath, teams = teamByGuid,
-                        msides = markerSide})
+                        msides = markerSide, mbags = markerBagName})
 end
 
 function onLoad(saved)
@@ -934,6 +968,7 @@ function onLoad(saved)
             sessionPath = st.path
             teamByGuid = st.teams or {}
             markerSide = st.msides or {}
+            markerBagName = st.mbags or {}
         end
     end
     -- No buttons, no Start/Stop/End — fully automatic by design: recording begins

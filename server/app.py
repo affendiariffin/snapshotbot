@@ -360,19 +360,30 @@ def replay_download(slug):
                  for n in card_names}
     with open(os.path.join(app.static_folder, "card_names.json"), encoding="utf-8") as f:
         card_names_json = json.load(f)
+    # Embed art for both the image key (mk.i — the truth for mod-misnamed
+    # tokens) and the name key (fallback), so the offline viewer's lookup
+    # chain works the same as online.
     marker_b64 = {}
     for s in bundle["snapshots"]:
         for m in s.get("markers") or []:
-            k = re.sub(r"[^a-z0-9]", "", (m.get("n") or "").lower())
-            if k and k not in marker_b64:
-                p = os.path.join(app.static_folder, "markers", k + ".png")
-                if os.path.exists(p):
-                    with open(p, "rb") as f:
-                        marker_b64[k] = base64.b64encode(f.read()).decode()
+            ks = (["i" + m["i"]] if m.get("i") else []) \
+                + [re.sub(r"[^a-z0-9]", "", (m.get(f) or "").lower()) for f in ("bn", "n")]
+            for k in ks:
+                if k and k not in marker_b64:
+                    p = os.path.join(app.static_folder, "markers", k + ".png")
+                    if os.path.exists(p):
+                        with open(p, "rb") as f:
+                            marker_b64[k] = base64.b64encode(f.read()).decode()
+    try:
+        with open(os.path.join(app.static_folder, "markers", "markers.json"),
+                  encoding="utf-8") as f:
+            marker_names = json.load(f)
+    except OSError:
+        marker_names = {}
     embedded = {"session": bundle, "geom": db.geom_export(keys),
                 "layout_svg": layout_svg, "base_sizes": base_sizes,
                 "cards": db.cards_export(card_keys), "card_names": card_names_json,
-                "markers": marker_b64}
+                "markers": marker_b64, "marker_names": marker_names}
     html = render_template(
         "replay.html",
         slug=slug,

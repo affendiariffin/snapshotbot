@@ -30,12 +30,19 @@ def clean(name):
     return re.sub(r"\s+", " ", re.sub(r"\[[^\]]*\]", "", name)).strip()
 
 
-def walk(o):
-    yield o
+def walk(o, container=None):
+    yield o, container
     for c in o.get("ContainedObjects") or []:
-        yield from walk(c)
+        yield from walk(c, o)
     for c in (o.get("States") or {}).values():
-        yield from walk(c)
+        yield from walk(c, container)
+
+
+def img_id(url):
+    # Last 12 chars of the URL's final path segment — MUST mirror the token
+    # Lua's markerImgIds derivation exactly.
+    m = re.search(r"(\w+)/*$", url or "")
+    return m.group(1).lower()[-12:] if m else None
 
 
 def fetch(url):
@@ -50,19 +57,38 @@ def fetch(url):
 
 def main():
     d = json.load(open(MOD, encoding="utf-8"))
-    tokens = {}
-    for o in walk({"ContainedObjects": d["ObjectStates"]}):
+    # Two indexes. Name-keyed (legacy fallback for records without an image id):
+    # a token whose dispensing bag carries the SAME name wins the key, so a
+    # mod misnaming elsewhere can't steal it. Image-keyed ("i" + 12-char url
+    # id, matching the token Lua): the truth — LCT's Objective Secured Red/Blue
+    # bags dispense tokens NICKNAMED "Action", so names lie; display name comes
+    # from the bag when it disagrees with the token.
+    tokens = {}      # namekey -> (display, url, bag_consistent)
+    by_img = {}      # "i<id>" -> (display, url, bag_named)
+    for o, container in walk({"ContainedObjects": d["ObjectStates"]}):
         n = o.get("Nickname") or ""
         if o.get("Name") != "Custom_Token" or not n:
             continue
         url = (o.get("CustomImage") or {}).get("ImageURL")
         k = norm(n)
-        if url and k and k not in tokens:
-            tokens[k] = (clean(n), url)
+        if not url or not k:
+            continue
+        bag = clean((container or {}).get("Nickname") or "") \
+            if "Bag" in ((container or {}).get("Name") or "") else ""
+        consistent = bool(bag) and norm(bag) == k
+        if k not in tokens or (consistent and not tokens[k][2]):
+            tokens[k] = (clean(n), url, consistent)
+        iid = img_id(url)
+        display = bag if bag and norm(bag) != k else clean(n)
+        bag_named = bool(bag) and norm(bag) != k
+        if iid and ("i" + iid not in by_img or (bag_named and not by_img["i" + iid][2])):
+            by_img["i" + iid] = (display, url, bag_named)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     index, ok, fail = {}, 0, 0
-    for k, (name, url) in sorted(tokens.items()):
+    todo = {k: (name, url) for k, (name, url, _) in tokens.items()}
+    todo.update({k: (name, url) for k, (name, url, _) in by_img.items()})
+    for k, (name, url) in sorted(todo.items()):
         try:
             img = Image.open(io.BytesIO(fetch(url))).convert("RGBA")
             img.thumbnail((SIZE, SIZE))
