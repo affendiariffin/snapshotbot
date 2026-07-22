@@ -1101,6 +1101,17 @@ function updateClocks(){
    exits (ΔS/ΔCP window signals), genuine marker first-drops (repositioned
    tokens move-matched away), R2+ reserve arrivals, unit removals. */
 let EVENTS = null, evFrameCount = 0;   // EVENTS[i] = {red:[], blue:[]}
+// Mission-scoring knowledge (server/static/mission_scoring.json — transcribed
+// from the official card faces): secondary timing/values/maxes + per-primary
+// per-round scoring ceilings. Powers the context-awareness checks below.
+let MS = null;
+function msLoaded(d){
+  MS = d || {secondaries: {}, primaries: {}};
+  EVENTS = null;
+  if (FRAMES.length) renderCallouts();
+}
+if (EMBEDDED) msLoaded(EMBEDDED.mission_scoring);
+else fetch('/static/mission_scoring.json').then(r => r.json()).then(msLoaded).catch(() => msLoaded(null));
 function cleanCard(n){ return String(n || '').replace(/^\d+[.)]\s*/, '').trim(); }
 function evNearObj(x, z){
   let best = null, bd = 1e9;
@@ -1141,8 +1152,9 @@ function deriveEvents(){
       const k = side + '|' + fld;
       if (k in prevv && v !== prevv[k]){
         const wk = side + '|' + (winOf[i] != null ? winOf[i] : 'solo' + i);
-        const g = book[wk] = book[wk] || {i: i, side: side, d: {}, fin: {}};
-        g.i = i; g.d[fld] = (g.d[fld] || 0) + (v - prevv[k]); g.fin[fld] = v;
+        const g = book[wk] = book[wk] || {i: i, side: side, r: f.round || 0, d: {}, fin: {}};
+        g.i = i; g.r = f.round || 0;
+        g.d[fld] = (g.d[fld] || 0) + (v - prevv[k]); g.fin[fld] = v;
       }
       prevv[k] = v;
     }
@@ -1171,15 +1183,36 @@ function deriveEvents(){
   }
   // a card exit and the window's secondary booking are the same VP twice —
   // when the deltas agree, one merged line carries card, delta and new total.
-  // SEC_MAX = verified max tactical VP per card (keep in sync with the
-  // analyze-game skill's secondary_tiers.json): a ΔS above the cards' summed
-  // max can't all be theirs — split off the unattributed remainder.
-  const SEC_MAX = {'overwhelming force': 5, 'bring it down': 5,
-                   'assassination': 5, 'engage on all fronts': 5};
+  // Context awareness (from mission_scoring.json): per-card timing classes,
+  // per-scoring maxes (split off VP the cards can't account for), R1 redraw
+  // rules, and per-primary per-round ceilings on bookings.
+  const SEC = (MS && MS.secondaries) || {};
+  // side -> primary mission: the loose primary-mission cards vote by side tag
+  const missionNames = {};
+  for (const v of Object.values(LAYOUT_META.missions || {}))
+    missionNames[String(v).toLowerCase()] = String(v);
+  const pvotes = {red: {}, blue: {}};
+  FRAMES.forEach(f => {
+    for (const c of (f.cards || {}).loose || []){
+      const base = String(c.n || '').replace(/\s+\d+$/, '').toLowerCase();
+      if (missionNames[base] && (c.t === 'red' || c.t === 'blue'))
+        pvotes[c.t][base] = (pvotes[c.t][base] || 0) + 1;
+    }
+  });
+  const sidePrimary = {};
+  for (const side of ['red', 'blue']){
+    let bn = null, bc = 0;
+    for (const [n, c2] of Object.entries(pvotes[side])) if (c2 > bc){ bc = c2; bn = n; }
+    sidePrimary[side] = bn;
+  }
   const consumed = new Set();
   for (const g of Object.values(eg)){
     if (g.w == null) continue;
     const dS = winDelta(g.w, g.side, 'secondary'), dCp = winDelta(g.w, g.side, 'cp');
+    const own = windows[g.w].active === g.side, round = windows[g.w].round;
+    const infos = g.cards.map(c => SEC[c.toLowerCase()]);
+    // R1 exits of redraw-rule cards (Defend Stronghold's is mandatory) = rule noise
+    if (dS <= 0 && round <= 1 && infos.length && infos.every(x => x && x.r1)) continue;
     if (dS <= 0 && (dCp > 0 || (dCp < 0 && drawsInWin[g.side][g.w]))) continue;
     if (dS > 0){
       const bk = book[g.side + '|' + g.w];
@@ -1189,19 +1222,31 @@ function deriveEvents(){
         tot = ` → ${bk.fin.secondary}`;
         g.i = Math.max(g.i, bk.i);
       }
-      const mx = g.cards.map(c => SEC_MAX[c.toLowerCase()]);
-      const cap = mx.every(m => m != null) ? mx.reduce((a, b) => a + b, 0) : null;
-      if (cap != null && dS > cap)
-        add(g.i, g.side,
-            `${g.cards.join(' + ')} likely scored +${cap} · +${dS - cap} other${tot}`);
-      else
-        add(g.i, g.side, `${g.cards.join(' + ')} likely scored +${dS}${tot}`);
+      const cap = infos.every(x => x) ? infos.reduce((a, x) => a + x.max, 0) : null;
+      let txt = (cap != null && dS > cap)
+        ? `${g.cards.join(' + ')} likely scored +${cap} · +${dS - cap} other${tot}`
+        : `${g.cards.join(' + ')} likely scored +${dS}${tot}`;
+      if (g.cards.length === 1 && infos[0]){
+        const w0 = infos[0].when;
+        if (w0 === 'own' && !own) txt += ' (own-turn card — score likely from previous turn)';
+        else if (w0 === 'opp' && own && round < 5) txt += " (opp-turn card — score likely from their turn)";
+        else if (w0 === 'own2opp5' && dS === 5) txt += ' (the opponent-turn 5)';
+        else if (w0 === 'own2opp5' && dS === 2) txt += ' (the own-turn 2)';
+      }
+      add(g.i, g.side, txt);
     } else add(g.i, g.side, `${g.cards.join(' + ')} → gone, unclear`);
   }
   for (const [wk, g] of Object.entries(book))
     for (const fld of ['primary', 'secondary']){
       if (!g.d[fld] || (fld === 'secondary' && consumed.has(wk))) continue;
-      add(g.i, g.side, `${fld === 'primary' ? 'primaries' : 'secondaries'} ${g.d[fld] > 0 ? '+' : ''}${g.d[fld]} → ${g.fin[fld]}`);
+      let txt = `${fld === 'primary' ? 'primaries' : 'secondaries'} ${g.d[fld] > 0 ? '+' : ''}${g.d[fld]} → ${g.fin[fld]}`;
+      if (g.d[fld] > 15) txt += ' ⚠ above the 15/round cap — multi-round lump?';
+      else if (fld === 'primary' && MS && MS.primaries){
+        const pn = sidePrimary[g.side], pm = pn && MS.primaries[pn];
+        if (pm && g.r >= 1 && g.r <= 5 && g.d[fld] > pm.roundMax[g.r - 1])
+          txt += ` ⚠ ${missionNames[pn]} can score at most ${pm.roundMax[g.r - 1]} in R${g.r} — pre-book / late entry?`;
+      }
+      add(g.i, g.side, txt);
     }
   // markers: genuine NEW drops only — a vanished same-name position nearby = a move
   let prevPos = {};

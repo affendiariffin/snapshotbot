@@ -380,10 +380,17 @@ def replay_download(slug):
             marker_names = json.load(f)
     except OSError:
         marker_names = {}
+    try:
+        with open(os.path.join(app.static_folder, "mission_scoring.json"),
+                  encoding="utf-8") as f:
+            mission_scoring = json.load(f)
+    except OSError:
+        mission_scoring = None
     embedded = {"session": bundle, "geom": db.geom_export(keys),
                 "layout_svg": layout_svg, "base_sizes": base_sizes,
                 "cards": db.cards_export(card_keys), "card_names": card_names_json,
-                "markers": marker_b64, "marker_names": marker_names}
+                "markers": marker_b64, "marker_names": marker_names,
+                "mission_scoring": mission_scoring}
     html = render_template(
         "replay.html",
         slug=slug,
