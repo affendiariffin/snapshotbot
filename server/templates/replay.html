@@ -1122,9 +1122,21 @@ function evInPoly(poly, x, z){
   }
   return inside;
 }
+function evPolyDist(poly, x, z){
+  if (evInPoly(poly, x, z)) return 0;
+  let best = 1e9;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
+    const [x1, z1] = poly[j], [x2, z2] = poly[i];
+    const dx = x2 - x1, dz = z2 - z1;
+    const t = Math.max(0, Math.min(1, ((x - x1) * dx + (z - z1) * dz) / (dx * dx + dz * dz || 1)));
+    best = Math.min(best, Math.hypot(x - (x1 + t * dx), z - (z1 + t * dz)));
+  }
+  return best;
+}
 // Objectives are terrain AREAS in 11e — no centre to measure to. Describe
 // WHERE a marker dropped in mission terms instead: DZ, edge ingress zone,
-// near an objective (within ~6, no false-precision inches), territory.
+// the official layout's GENERAL terrain areas (LCT tables approximate them —
+// 3" tolerance as "near"), near an objective, territory.
 function evPlace(x, z){
   const parts = [];
   if (LAYOUT_META.red_poly && evInPoly(LAYOUT_META.red_poly, x, z)) parts.push("in red's DZ");
@@ -1136,6 +1148,10 @@ function evPlace(x, z){
     if (d < bd){ bd = d; best = o; }
   }
   if (best && bd <= 6) parts.unshift('near ' + (best.kind || 'objective'));
+  let tbest = 1e9;
+  for (const tp of LAYOUT_META.terrain || []) tbest = Math.min(tbest, evPolyDist(tp, x, z));
+  if (tbest === 0) parts.push('in a terrain area');
+  else if (tbest <= 3) parts.push('near a terrain area');
   if (!parts.length && LAYOUT_META.red_zone){
     const dot = x * LAYOUT_META.red_zone[0] + z * LAYOUT_META.red_zone[1];
     parts.push(dot > 0 ? 'red territory' : 'blue territory');
