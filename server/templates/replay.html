@@ -1390,13 +1390,13 @@ function renderCallouts(){
   const span = Math.max(Date.parse(FRAMES[FRAMES.length - 1].taken_at) - t0, 1);
   for (const [side, el] of [['red', rEl], ['blue', bEl]]){
     el.innerHTML = '';
-    // linger: show the nearest event frame within the last 5 frames — a newer
-    // callout naturally replaces an older one; pure function of cur, so
-    // scrubbing in any direction behaves.
+    // persist: show this side's most recent event at or before the current
+    // frame — it stays until the next event on that side replaces it (pure
+    // function of cur, so scrubbing either direction behaves).
     let msgs = [], atI = -1;
-    for (let k = 0; k <= 5 && cur - k >= 0; k++){
-      const e2 = all[cur - k];
-      if (e2 && e2[side].length){ msgs = e2[side]; atI = cur - k; break; }
+    for (let k = cur; k >= 0; k--){
+      const e2 = all[k];
+      if (e2 && e2[side].length){ msgs = e2[side]; atI = k; break; }
     }
     if (!msgs.length) continue;
     const truePct = (Date.parse(FRAMES[atI].taken_at) - t0) / span * 100;
