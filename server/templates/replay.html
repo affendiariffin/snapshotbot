@@ -1113,14 +1113,34 @@ function msLoaded(d){
 if (EMBEDDED) msLoaded(EMBEDDED.mission_scoring);
 else fetch('/static/mission_scoring.json').then(r => r.json()).then(msLoaded).catch(() => msLoaded(null));
 function cleanCard(n){ return String(n || '').replace(/^\d+[.)]\s*/, '').trim(); }
-function evNearObj(x, z){
+function evInPoly(poly, x, z){
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
+    const [xi, zi] = poly[i], [xj, zj] = poly[j];
+    if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+// Objectives are terrain AREAS in 11e — no centre to measure to. Describe
+// WHERE a marker dropped in mission terms instead: DZ, edge ingress zone,
+// near an objective (within ~6, no false-precision inches), territory.
+function evPlace(x, z){
+  const parts = [];
+  if (LAYOUT_META.red_poly && evInPoly(LAYOUT_META.red_poly, x, z)) parts.push("in red's DZ");
+  else if (LAYOUT_META.blue_poly && evInPoly(LAYOUT_META.blue_poly, x, z)) parts.push("in blue's DZ");
+  else if (Math.abs(x) > 24 || Math.abs(z) > 16) parts.push('in an edge ingress zone');
   let best = null, bd = 1e9;
   for (const o of LAYOUT_META.objectives || []){
     const d = Math.hypot(x - o.x, z - o.z);
     if (d < bd){ bd = d; best = o; }
   }
-  if (!best) return '';
-  return 'near ' + (best.kind || 'objective') + (bd > 6 ? ` (${bd.toFixed(0)}" off)` : '');
+  if (best && bd <= 6) parts.unshift('near ' + (best.kind || 'objective'));
+  if (!parts.length && LAYOUT_META.red_zone){
+    const dot = x * LAYOUT_META.red_zone[0] + z * LAYOUT_META.red_zone[1];
+    parts.push(dot > 0 ? 'red territory' : 'blue territory');
+  }
+  return parts.join(', ');
 }
 function deriveEvents(){
   if (EVENTS && evFrameCount === FRAMES.length) return EVENTS;
@@ -1268,12 +1288,15 @@ function deriveEvents(){
         });
         appeared.splice(bi, 1);
       }
-      for (const p of appeared) add(i, p[2], `${name} ${evNearObj(p[0], p[1])}`);
+      for (const p of appeared) add(i, p[2], `${name} — ${evPlace(p[0], p[1])}`);
     }
     prevPos = byName;
   });
-  // units: R2+ arrivals (rapid ingress / out-of-phase) + removals
-  const units = {};
+  // units: R2+ arrivals (rapid ingress / out-of-phase) + removals. Same-name
+  // squads without yellowscribe ids MERGE under one key, hiding a whole
+  // squad's death while its twin lives (session 45 Warp Talons, frame ~211) —
+  // the count series is kept per key so sustained multi-model drops fire too.
+  const units = {}, series = {};
   FRAMES.forEach((f, i) => {
     const counts = {};
     for (const m of f.models || []){
@@ -1287,8 +1310,11 @@ function deriveEvents(){
       if (m.v) u.wasV = true;
       else if (u.wasV && u.arrI == null) u.arrI = i;
     }
-    for (const [k, n] of Object.entries(counts))
+    for (const [k, n] of Object.entries(counts)){
       units[k].peak = Math.max(units[k].peak, n);
+      (series[k] = series[k] || {}).last = undefined;
+    }
+    for (const k of Object.keys(series)) (series[k][i] = counts[k] || 0);
   });
   const uLabel = u => {
     let bn = '?', bc = -1;
@@ -1313,6 +1339,23 @@ function deriveEvents(){
   }
   for (const g of Object.values(goneG))
     add(g.i, g.side, g.ns.join(' + ') + ' removed');
+  // sustained multi-model drop (>=3 in one step, survivors remain >=4 frames)
+  for (const [k, ser] of Object.entries(series)){
+    const u = units[k];
+    for (let i = 1; i < FRAMES.length; i++){
+      const a = ser[i - 1] || 0, b2 = ser[i] || 0;
+      if (b2 > 0 && a - b2 >= 3){
+        let sustained = true;
+        for (let j = i + 1; j <= Math.min(i + 4, FRAMES.length - 1); j++)
+          if ((ser[j] || 0) > b2) sustained = false;
+        if (sustained){
+          let bn = '?', bc = -1;
+          for (const [n, c2] of Object.entries(u.names)) if (c2 > bc){ bc = c2; bn = n; }
+          add(i, u.side, `${bn} −${a - b2} models (${b2} left)`);
+        }
+      }
+    }
+  }
   EVENTS = ev;
   return ev;
 }
