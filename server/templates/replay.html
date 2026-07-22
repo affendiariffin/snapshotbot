@@ -102,23 +102,24 @@
   #lightbox{display:none;position:fixed;inset:0;background:#000d;z-index:50;
     align-items:center;justify-content:center;cursor:zoom-out}
   #lightbox img{max-height:92vh;max-width:92vw;border-radius:10px}
-  /* strip-wrap = 3 lanes: red event callouts above, the scrubber, blue below.
-     Callouts show the current frame's derived events, lingering 5 frames unless
-     a newer one replaces them — pause playback to read. Leader lines anchor
-     each bubble to its event's true position on the strip. */
-  .strip-wrap{flex:1;min-width:200px;display:flex;flex-direction:column;gap:8px}
-  .ts-callouts{position:relative;height:68px}
+  /* Callout lanes float OVER neighbouring elements (zero layout height): red
+     above the scrubber, blue below, leader lines to the event's true strip
+     position. Bubbles linger 5 frames unless a newer one replaces them. */
+  .strip-wrap{position:relative;flex:1;min-width:200px;height:16px}
+  .ts-callouts{position:absolute;left:0;right:0;height:72px;z-index:30;pointer-events:none}
+  #calloutRed{bottom:100%;margin-bottom:8px}
+  #calloutBlue{top:100%;margin-top:8px}
   .ts-callout{position:absolute;transform:translateX(-50%);max-width:88%;z-index:1;
-    font-size:.85rem;line-height:1.35;background:#000d;border:1px solid var(--border);
-    border-radius:5px;padding:3px 10px;overflow:hidden;
+    font-size:.85rem;line-height:1.35;background:#000e;border:1px solid var(--border);
+    border-radius:5px;padding:3px 10px;overflow:hidden;pointer-events:auto;
     display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
-  #calloutRed .ts-callout{top:0}
-  #calloutBlue .ts-callout{bottom:0}
+  #calloutRed .ts-callout{bottom:0}
+  #calloutBlue .ts-callout{top:0}
   .ts-callout.red{border-left:3px solid var(--red)}
   .ts-callout.blue{border-left:3px solid var(--blue)}
   .ts-leader{position:absolute;width:2px;transform:translateX(-50%);opacity:.55;z-index:0}
-  #calloutRed .ts-leader{top:14px;bottom:-8px}
-  #calloutBlue .ts-leader{top:-8px;bottom:14px}
+  #calloutRed .ts-leader{top:24px;bottom:-8px}
+  #calloutBlue .ts-leader{top:-8px;bottom:24px}
   .ts-leader.red{background:var(--red)}
   .ts-leader.blue{background:var(--blue)}
   .time-strip{position:relative;width:100%;height:16px;background:var(--card);
@@ -1169,7 +1170,12 @@ function deriveEvents(){
     eg[k].i = Math.max(eg[k].i, x.i);
   }
   // a card exit and the window's secondary booking are the same VP twice —
-  // when the deltas agree, one merged line carries card, delta and new total
+  // when the deltas agree, one merged line carries card, delta and new total.
+  // SEC_MAX = verified max tactical VP per card (keep in sync with the
+  // analyze-game skill's secondary_tiers.json): a ΔS above the cards' summed
+  // max can't all be theirs — split off the unattributed remainder.
+  const SEC_MAX = {'overwhelming force': 5, 'bring it down': 5,
+                   'assassination': 5, 'engage on all fronts': 5};
   const consumed = new Set();
   for (const g of Object.values(eg)){
     if (g.w == null) continue;
@@ -1183,7 +1189,13 @@ function deriveEvents(){
         tot = ` → ${bk.fin.secondary}`;
         g.i = Math.max(g.i, bk.i);
       }
-      add(g.i, g.side, `${g.cards.join(' + ')} likely scored +${dS}${tot}`);
+      const mx = g.cards.map(c => SEC_MAX[c.toLowerCase()]);
+      const cap = mx.every(m => m != null) ? mx.reduce((a, b) => a + b, 0) : null;
+      if (cap != null && dS > cap)
+        add(g.i, g.side,
+            `${g.cards.join(' + ')} likely scored +${cap} · +${dS - cap} other${tot}`);
+      else
+        add(g.i, g.side, `${g.cards.join(' + ')} likely scored +${dS}${tot}`);
     } else add(g.i, g.side, `${g.cards.join(' + ')} → gone, unclear`);
   }
   for (const [wk, g] of Object.entries(book))
