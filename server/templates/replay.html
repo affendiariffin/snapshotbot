@@ -1341,12 +1341,17 @@ function renderCallouts(){
     const b = document.createElement('div');
     b.className = 'ts-callout ' + side;
     b.style.left = truePct + '%';
-    b.textContent = msgs.join(' · ');
-    b.title = msgs.join('\n');
+    const cmsgs = msgs.map(m => m.charAt(0).toUpperCase() + m.slice(1));
+    b.textContent = cmsgs.join(' · ');
+    b.title = cmsgs.join('\n');
     el.appendChild(b);
-    // clamp by measurement so the bubble never overflows the lane edges
-    const half = b.offsetWidth / 2 / el.offsetWidth * 100;
-    b.style.left = Math.min(100 - half, Math.max(half, truePct)) + '%';
+    // clamp by measurement: stay inside the lane, but never slide off the
+    // leader line — its end must remain inside the bubble
+    const elW = el.offsetWidth, half = b.offsetWidth / 2, pad = 14;
+    const tpx = truePct / 100 * elW;
+    let cpx = Math.min(elW - half, Math.max(half, tpx));
+    cpx = Math.min(Math.max(cpx, tpx - half + pad), tpx + half - pad);
+    b.style.left = (cpx / elW * 100) + '%';
   }
 }
 function show(n){
