@@ -107,11 +107,11 @@
      a newer one replaces them — pause playback to read. Leader lines anchor
      each bubble to its event's true position on the strip. */
   .strip-wrap{flex:1;min-width:200px;display:flex;flex-direction:column;gap:8px}
-  .ts-callouts{position:relative;height:46px}
-  .ts-callout{position:absolute;transform:translateX(-50%);max-width:70%;z-index:1;
+  .ts-callouts{position:relative;height:68px}
+  .ts-callout{position:absolute;transform:translateX(-50%);max-width:88%;z-index:1;
     font-size:.85rem;line-height:1.35;background:#000d;border:1px solid var(--border);
     border-radius:5px;padding:3px 10px;overflow:hidden;
-    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
   #calloutRed .ts-callout{top:0}
   #calloutBlue .ts-callout{bottom:0}
   .ts-callout.red{border-left:3px solid var(--red)}
@@ -1283,10 +1283,13 @@ function renderCallouts(){
     el.appendChild(lead);
     const b = document.createElement('div');
     b.className = 'ts-callout ' + side;
-    b.style.left = Math.min(85, Math.max(15, truePct)) + '%';
+    b.style.left = truePct + '%';
     b.textContent = msgs.join(' · ');
     b.title = msgs.join('\n');
     el.appendChild(b);
+    // clamp by measurement so the bubble never overflows the lane edges
+    const half = b.offsetWidth / 2 / el.offsetWidth * 100;
+    b.style.left = Math.min(100 - half, Math.max(half, truePct)) + '%';
   }
 }
 function show(n){
