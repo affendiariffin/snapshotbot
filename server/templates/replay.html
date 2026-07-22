@@ -102,15 +102,24 @@
     align-items:center;justify-content:center;cursor:zoom-out}
   #lightbox img{max-height:92vh;max-width:92vw;border-radius:10px}
   /* strip-wrap = 3 lanes: red event callouts above, the scrubber, blue below.
-     Callouts show the CURRENT frame's derived events only — pause to read. */
-  .strip-wrap{flex:1;min-width:200px;display:flex;flex-direction:column;gap:2px}
-  .ts-callouts{position:relative;height:20px}
-  .ts-callout{position:absolute;top:0;transform:translateX(-50%);max-width:70%;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.72rem;
-    line-height:1.5;background:#000c;border:1px solid var(--border);border-radius:4px;
-    padding:1px 8px}
+     Callouts show the current frame's derived events, lingering 3 frames unless
+     a newer one replaces them — pause playback to read. Leader lines anchor
+     each bubble to its event's true position on the strip. */
+  .strip-wrap{flex:1;min-width:200px;display:flex;flex-direction:column;gap:8px}
+  .ts-callouts{position:relative;height:46px}
+  .ts-callout{position:absolute;transform:translateX(-50%);max-width:70%;z-index:1;
+    font-size:.85rem;line-height:1.35;background:#000d;border:1px solid var(--border);
+    border-radius:5px;padding:3px 10px;overflow:hidden;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  #calloutRed .ts-callout{top:0}
+  #calloutBlue .ts-callout{bottom:0}
   .ts-callout.red{border-left:3px solid var(--red)}
   .ts-callout.blue{border-left:3px solid var(--blue)}
+  .ts-leader{position:absolute;width:2px;transform:translateX(-50%);opacity:.55;z-index:0}
+  #calloutRed .ts-leader{top:14px;bottom:-8px}
+  #calloutBlue .ts-leader{top:-8px;bottom:14px}
+  .ts-leader.red{background:var(--red)}
+  .ts-leader.blue{background:var(--blue)}
   .time-strip{position:relative;width:100%;height:16px;background:var(--card);
     border-radius:3px;overflow:hidden;cursor:grab;touch-action:none;user-select:none}
   .time-strip:active{cursor:grabbing}
@@ -1240,18 +1249,28 @@ function deriveEvents(){
 function renderCallouts(){
   const rEl = document.getElementById('calloutRed'), bEl = document.getElementById('calloutBlue');
   if (!rEl || !FRAMES.length) return;
-  const evs = deriveEvents()[cur];
+  const all = deriveEvents();
   const t0 = Date.parse(FRAMES[0].taken_at);
   const span = Math.max(Date.parse(FRAMES[FRAMES.length - 1].taken_at) - t0, 1);
-  const pct = Math.min(88, Math.max(12,
-    (Date.parse(FRAMES[cur].taken_at) - t0) / span * 100));
   for (const [side, el] of [['red', rEl], ['blue', bEl]]){
     el.innerHTML = '';
-    const msgs = evs ? evs[side] : [];
+    // linger: show the nearest event frame within the last 3 frames — a newer
+    // callout naturally replaces an older one; pure function of cur, so
+    // scrubbing in any direction behaves.
+    let msgs = [], atI = -1;
+    for (let k = 0; k <= 3 && cur - k >= 0; k++){
+      const e2 = all[cur - k];
+      if (e2 && e2[side].length){ msgs = e2[side]; atI = cur - k; break; }
+    }
     if (!msgs.length) continue;
+    const truePct = (Date.parse(FRAMES[atI].taken_at) - t0) / span * 100;
+    const lead = document.createElement('div');
+    lead.className = 'ts-leader ' + side;
+    lead.style.left = truePct + '%';
+    el.appendChild(lead);
     const b = document.createElement('div');
     b.className = 'ts-callout ' + side;
-    b.style.left = pct + '%';
+    b.style.left = Math.min(85, Math.max(15, truePct)) + '%';
     b.textContent = msgs.join(' · ');
     b.title = msgs.join('\n');
     el.appendChild(b);
