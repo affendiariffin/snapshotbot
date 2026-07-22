@@ -890,16 +890,15 @@ function renderPanel(){
       <td>${r2.secondary || 0}</td><td>${r2.primary || 0}</td><td class="tot p2">${r2.total || 0}</td>
       <td class="c-name-p2">Round ${r + 1}</td></tr>`;
   }
-  // players type end-of-battle scoring into round 5; only surface the mod's own
-  // EoB fields if someone actually used them
-  if ((p1.endOfBattle || 0) + (p2.endOfBattle || 0) > 0){
-    rows += `<tr>
+  // End of Battle is a distinct scoring step again (GW errata) and is EXEMPT from
+  // the 15/round cap the token applies to round cells — always show the row so
+  // players enter it here; typed into R5 instead it can be silently clamped.
+  rows += `<tr>
     <td class="c-name-p1">End of Battle</td>
     <td class="tot p1">${p1.endOfBattle || 0}</td><td>&mdash;</td><td>&mdash;</td>
     <td class="c-div"></td><td class="c-rnd">End of Battle</td><td class="c-div"></td>
     <td>&mdash;</td><td>&mdash;</td><td class="tot p2">${p2.endOfBattle || 0}</td>
     <td class="c-name-p2">End of Battle</td></tr>`;
-  }
   rows += `<tr class="total-row">
     <td class="c-name-p1">Totals</td>
     <td class="tot p1">${p1.total || 0}</td><td>${p1.primary || 0} / 45</td><td>${p1.secondary || 0} / 45</td>
