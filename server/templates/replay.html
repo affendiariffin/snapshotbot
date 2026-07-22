@@ -1146,10 +1146,6 @@ function deriveEvents(){
       prevv[k] = v;
     }
   });
-  for (const g of Object.values(book))
-    for (const fld of ['primary', 'secondary'])
-      if (g.d[fld])
-        add(g.i, g.side, `${fld === 'primary' ? 'primaries' : 'secondaries'} ${g.d[fld] > 0 ? '+' : ''}${g.d[fld]} → ${g.fin[fld]}`);
   // secondary exits: scoring-speculated only (discard/redraw = dashboard noise)
   const prevCards = {red: new Set(), blue: new Set()}, drawsInWin = {red: {}, blue: {}};
   const exits = [];
@@ -1172,13 +1168,29 @@ function deriveEvents(){
     (eg[k] = eg[k] || {i: x.i, side: x.side, w: x.w, cards: []}).cards.push(x.c);
     eg[k].i = Math.max(eg[k].i, x.i);
   }
+  // a card exit and the window's secondary booking are the same VP twice —
+  // when the deltas agree, one merged line carries card, delta and new total
+  const consumed = new Set();
   for (const g of Object.values(eg)){
     if (g.w == null) continue;
     const dS = winDelta(g.w, g.side, 'secondary'), dCp = winDelta(g.w, g.side, 'cp');
     if (dS <= 0 && (dCp > 0 || (dCp < 0 && drawsInWin[g.side][g.w]))) continue;
-    add(g.i, g.side, g.cards.join(' + ')
-        + (dS > 0 ? ` → likely scored (+${dS})` : ' → gone, unclear'));
+    if (dS > 0){
+      const bk = book[g.side + '|' + g.w];
+      let tot = '';
+      if (bk && bk.d.secondary === dS){
+        consumed.add(g.side + '|' + g.w);
+        tot = ` → ${bk.fin.secondary}`;
+        g.i = Math.max(g.i, bk.i);
+      }
+      add(g.i, g.side, `${g.cards.join(' + ')} likely scored +${dS}${tot}`);
+    } else add(g.i, g.side, `${g.cards.join(' + ')} → gone, unclear`);
   }
+  for (const [wk, g] of Object.entries(book))
+    for (const fld of ['primary', 'secondary']){
+      if (!g.d[fld] || (fld === 'secondary' && consumed.has(wk))) continue;
+      add(g.i, g.side, `${fld === 'primary' ? 'primaries' : 'secondaries'} ${g.d[fld] > 0 ? '+' : ''}${g.d[fld]} → ${g.fin[fld]}`);
+    }
   // markers: genuine NEW drops only — a vanished same-name position nearby = a move
   let prevPos = {};
   FRAMES.forEach((f, i) => {
