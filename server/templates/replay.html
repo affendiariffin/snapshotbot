@@ -1142,12 +1142,19 @@ function evPlace(x, z){
   if (LAYOUT_META.red_poly && evInPoly(LAYOUT_META.red_poly, x, z)) parts.push("in red's DZ");
   else if (LAYOUT_META.blue_poly && evInPoly(LAYOUT_META.blue_poly, x, z)) parts.push("in blue's DZ");
   else if (Math.abs(x) > 24 || Math.abs(z) > 16) parts.push('in an edge ingress zone');
-  let best = null, bd = 1e9;
+  // Objectives carry a baked LABEL (e.g. "blue's expansion objective"). A marker
+  // ON the objective's area beats merely NEAR it — a terrain area placed on the
+  // objective inherits its name, so a token inside reads "on <label>".
+  let best = null, bd = 1e9, bin = false;
   for (const o of LAYOUT_META.objectives || []){
-    const d = Math.hypot(x - o.x, z - o.z);
-    if (d < bd){ bd = d; best = o; }
+    const inside = o.poly && evInPoly(o.poly, x, z);
+    const d = inside ? 0 : (o.poly ? evPolyDist(o.poly, x, z) : Math.hypot(x - o.x, z - o.z));
+    if (d < bd){ bd = d; best = o; bin = inside; }
   }
-  if (best && bd <= 6) parts.unshift('near ' + (best.kind || 'objective'));
+  if (best && bd <= 3){
+    const lbl = best.label || (best.kind || 'objective');
+    parts.unshift((bin ? 'on ' : 'near ') + lbl);
+  }
   let tbest = 1e9;
   for (const tp of LAYOUT_META.terrain || []) tbest = Math.min(tbest, evPolyDist(tp, x, z));
   if (tbest === 0) parts.push('in a terrain area');
