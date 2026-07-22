@@ -101,7 +101,17 @@
   #lightbox{display:none;position:fixed;inset:0;background:#000d;z-index:50;
     align-items:center;justify-content:center;cursor:zoom-out}
   #lightbox img{max-height:92vh;max-width:92vw;border-radius:10px}
-  .time-strip{position:relative;flex:1;min-width:200px;height:16px;background:var(--card);
+  /* strip-wrap = 3 lanes: red event callouts above, the scrubber, blue below.
+     Callouts show the CURRENT frame's derived events only — pause to read. */
+  .strip-wrap{flex:1;min-width:200px;display:flex;flex-direction:column;gap:2px}
+  .ts-callouts{position:relative;height:20px}
+  .ts-callout{position:absolute;top:0;transform:translateX(-50%);max-width:70%;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.72rem;
+    line-height:1.5;background:#000c;border:1px solid var(--border);border-radius:4px;
+    padding:1px 8px}
+  .ts-callout.red{border-left:3px solid var(--red)}
+  .ts-callout.blue{border-left:3px solid var(--blue)}
+  .time-strip{position:relative;width:100%;height:16px;background:var(--card);
     border-radius:3px;overflow:hidden;cursor:grab;touch-action:none;user-select:none}
   .time-strip:active{cursor:grabbing}
   .ts-seg{position:absolute;top:0;height:100%}
@@ -203,7 +213,11 @@
   <button class="btn" id="prev">&#8592;</button>
   <button class="btn" id="playBtn">&#9654;</button>
   <button class="btn" id="next">&#8594;</button>
-  <div class="time-strip" id="timeStrip" title="drag to scrub — colour = whose clock was running"></div>
+  <div class="strip-wrap">
+    <div class="ts-callouts" id="calloutRed"></div>
+    <div class="time-strip" id="timeStrip" title="drag to scrub — colour = whose clock was running"></div>
+    <div class="ts-callouts" id="calloutBlue"></div>
+  </div>
   <span id="label"></span>
   <span class="clocks" id="clocks"></span>
   <span id="bookmarks"></span>
@@ -444,7 +458,7 @@ function maybeFlip(){
   }
   if (n < 60 && !past && !ENDED) return;   // live: keep sampling as claims spread
   flipDecided = true;
-  if (n && dot < 0){ FLIPPED = true; FRAMES.forEach(flipFrame); }
+  if (n && dot < 0){ FLIPPED = true; FRAMES.forEach(flipFrame); EVENTS = null; }
 }
 
 // Reserves / Transports: models flagged v=1 sit on the off-table reserves boards.
@@ -871,10 +885,51 @@ function renderPanel(){
   const disp = LAYOUT_META.label
     || (META.red_disposition && META.blue_disposition
         ? `${META.red_disposition}  vs  ${META.blue_disposition}` : null);
+  // Colour each disposition by who plays it (Fendi, 2026-07-22). Side truth =
+  // the primary cards on each side's tableau (live, survives stale meta);
+  // frozen meta only when it agrees with the layout pair. Unresolved = plain.
+  const DISP_NAMES = {TH: 'Take and Hold', PF: 'Purge the Foe', DI: 'Disruption',
+                      RE: 'Reconnaissance', PA: 'Priority Assets'};
+  function dispParts(){
+    const codes = (LAYOUT_KEY || '').split('-').slice(0, 2).filter(c => DISP_NAMES[c]);
+    if (codes.length !== 2) return null;
+    if (codes[0] === codes[1])   // mirror: panel convention is red left, blue right
+      return [{n: DISP_NAMES[codes[0]], s: 'red'}, {n: DISP_NAMES[codes[1]], s: 'blue'}];
+    const base = ns => new Set((ns || []).map(x => String(x).replace(/\s+\d+$/, '').toLowerCase()));
+    const rp = base(cd.red_primary), bp = base(cd.blue_primary);
+    const missions = LAYOUT_META.missions || {};
+    let sides = codes.map(c => {
+      const m = String(missions[c] || '').toLowerCase();
+      return m && rp.has(m) && !bp.has(m) ? 'red' : m && bp.has(m) && !rp.has(m) ? 'blue' : null;
+    });
+    if (sides[0] && !sides[1]) sides[1] = sides[0] === 'red' ? 'blue' : 'red';
+    if (sides[1] && !sides[0]) sides[0] = sides[1] === 'red' ? 'blue' : 'red';
+    if (!sides[0] || sides[0] === sides[1]){
+      const mc = {};
+      for (const [c, n] of Object.entries(DISP_NAMES)){
+        if (META.red_disposition === n) mc.red = c;
+        if (META.blue_disposition === n) mc.blue = c;
+      }
+      if (mc.red && mc.blue && [...codes].sort().join() === [mc.red, mc.blue].sort().join())
+        sides = codes.map(c => mc.red === c ? 'red' : 'blue');
+      else return null;
+    }
+    return codes.map((c, i) => ({n: DISP_NAMES[c], s: sides[i]}));
+  }
+  const dp = dispParts();
+  const dispHtml = dp
+    ? '<div class="card-pill">' + dp.map(p =>
+        `<span style="color:${p.s === 'red' ? '#e05555' : '#5588e0'}">${esc(p.n)}</span>`)
+        .join('<span style="color:#5a6080"> vs </span>') + '</div>'
+    : (!LAYOUT_META.label && META.red_disposition && META.blue_disposition)
+      ? `<div class="card-pill"><span style="color:#e05555">${esc(META.red_disposition)}</span>`
+        + '<span style="color:#5a6080"> vs </span>'
+        + `<span style="color:#5588e0">${esc(META.blue_disposition)}</span></div>`
+      : pill(disp);
   sharedBar.innerHTML = `
    <div class="shared-card"><div class="player-label">Layout</div>${pill(META.map || LAYOUT_KEY)}
      ${LAYOUT_META.label ? `<div class="atk-def">${esc(LAYOUT_META.label)}${LAYOUT_KEY ? ' · ' + LAYOUT_KEY : ''}</div>` : ''}</div>
-   <div class="shared-card"><div class="player-label">Dispositions</div>${pill(disp)}</div>`;
+   <div class="shared-card"><div class="player-label">Dispositions</div>${dispHtml}</div>`;
 
   let rows = `<tr class="battle-ready">
     <td class="c-name-p1">Battle Ready</td><td class="tot p1">10</td><td>&mdash;</td><td>&mdash;</td>
@@ -1028,11 +1083,185 @@ function updateClocks(){
   if (cEl) cEl.style.left = ((Date.parse(FRAMES[cur].taken_at) - t0) / span * 100) + '%';
 }
 
+/* ---------- deterministic event derivation ----------
+   Mirror of the analyze-game skill's timeline.py — keep the two in sync.
+   Everything here is data transformation, no interpretation: turn windows,
+   VP bookings netted per side per turn window, scoring-speculated secondary
+   exits (ΔS/ΔCP window signals), genuine marker first-drops (repositioned
+   tokens move-matched away), R2+ reserve arrivals, unit removals. */
+let EVENTS = null, evFrameCount = 0;   // EVENTS[i] = {red:[], blue:[]}
+function cleanCard(n){ return String(n || '').replace(/^\d+[.)]\s*/, '').trim(); }
+function evNearObj(x, z){
+  let best = null, bd = 1e9;
+  for (const o of LAYOUT_META.objectives || []){
+    const d = Math.hypot(x - o.x, z - o.z);
+    if (d < bd){ bd = d; best = o; }
+  }
+  if (!best) return '';
+  return 'near ' + (best.kind || 'objective') + (bd > 6 ? ` (${bd.toFixed(0)}" off)` : '');
+}
+function deriveEvents(){
+  if (EVENTS && evFrameCount === FRAMES.length) return EVENTS;
+  evFrameCount = FRAMES.length;
+  const ev = FRAMES.map(() => null);
+  const add = (i, side, text) => {
+    (ev[i] = ev[i] || {red: [], blue: []})[side === 'blue' ? 'blue' : 'red'].push(text);
+  };
+  // turn windows
+  const winOf = new Array(FRAMES.length).fill(null), windows = [];
+  FRAMES.forEach((f, i) => {
+    const r = f.round || 0, act = frameTurn(f);
+    if (r < 1 || !act) return;
+    const w = windows[windows.length - 1];
+    if (w && w.round === r && w.active === act) w.i1 = i;
+    else windows.push({round: r, active: act, i0: i, i1: i});
+    winOf[i] = windows.length - 1;
+  });
+  const scv = (i, side, fld) =>
+    (FRAMES[i].scores && FRAMES[i].scores[side] && FRAMES[i].scores[side][fld]) || 0;
+  const winDelta = (w, side, fld) =>
+    scv(windows[w].i1, side, fld) - scv(Math.max(windows[w].i0 - 1, 0), side, fld);
+  // VP bookings netted per (side, turn window), stamped at the last booking frame
+  const book = {}, prevv = {};
+  FRAMES.forEach((f, i) => {
+    for (const side of ['red', 'blue']) for (const fld of ['primary', 'secondary']){
+      const v = f.scores && f.scores[side] ? f.scores[side][fld] : null;
+      if (v == null) continue;
+      const k = side + '|' + fld;
+      if (k in prevv && v !== prevv[k]){
+        const wk = side + '|' + (winOf[i] != null ? winOf[i] : 'solo' + i);
+        const g = book[wk] = book[wk] || {i: i, side: side, d: {}, fin: {}};
+        g.i = i; g.d[fld] = (g.d[fld] || 0) + (v - prevv[k]); g.fin[fld] = v;
+      }
+      prevv[k] = v;
+    }
+  });
+  for (const g of Object.values(book))
+    for (const fld of ['primary', 'secondary'])
+      if (g.d[fld])
+        add(g.i, g.side, `${fld} ${g.d[fld] > 0 ? '+' : ''}${g.d[fld]} → ${g.fin[fld]}`);
+  // secondary exits: scoring-speculated only (discard/redraw = dashboard noise)
+  const prevCards = {red: new Set(), blue: new Set()}, drawsInWin = {red: {}, blue: {}};
+  const exits = [];
+  FRAMES.forEach((f, i) => {
+    for (const side of ['red', 'blue']){
+      const cur2 = new Set(((f.cards || {})[side + '_secondary'] || []).map(cleanCard));
+      for (const c of cur2)
+        if (!prevCards[side].has(c) && winOf[i] != null)
+          drawsInWin[side][winOf[i]] = (drawsInWin[side][winOf[i]] || 0) + 1;
+      for (const c of prevCards[side])
+        if (!cur2.has(c))
+          exits.push({i: i, side: side, c: c,
+                      w: i && winOf[i - 1] != null ? winOf[i - 1] : winOf[i]});
+      prevCards[side] = cur2;
+    }
+  });
+  const eg = {};
+  for (const x of exits){
+    const k = x.side + '|' + x.w;
+    (eg[k] = eg[k] || {i: x.i, side: x.side, w: x.w, cards: []}).cards.push(x.c);
+    eg[k].i = Math.max(eg[k].i, x.i);
+  }
+  for (const g of Object.values(eg)){
+    if (g.w == null) continue;
+    const dS = winDelta(g.w, g.side, 'secondary'), dCp = winDelta(g.w, g.side, 'cp');
+    if (dS <= 0 && (dCp > 0 || (dCp < 0 && drawsInWin[g.side][g.w]))) continue;
+    add(g.i, g.side, g.cards.join(' + ')
+        + (dS > 0 ? ` → likely scored (+${dS})` : ' → gone, unclear'));
+  }
+  // markers: genuine NEW drops only — a vanished same-name position nearby = a move
+  let prevPos = {};
+  FRAMES.forEach((f, i) => {
+    const byName = {};
+    for (const mk of f.markers || [])
+      (byName[mk.n] = byName[mk.n] || []).push([mk.x, mk.z, mk.t]);
+    for (const [name, cur2] of Object.entries(byName)){
+      const key = p => p[0].toFixed(1) + ',' + p[1].toFixed(1);
+      const old = prevPos[name] || [];
+      const oldK = new Set(old.map(key)), curK = new Set(cur2.map(key));
+      const appeared = cur2.filter(p => !oldK.has(key(p)));
+      for (const v of old.filter(p => !curK.has(key(p)))){
+        if (!appeared.length) break;
+        let bi = 0, bd = 1e9;
+        appeared.forEach((p, j) => {
+          const d = Math.hypot(p[0] - v[0], p[1] - v[1]);
+          if (d < bd){ bd = d; bi = j; }
+        });
+        appeared.splice(bi, 1);
+      }
+      for (const p of appeared) add(i, p[2], `${name} ${evNearObj(p[0], p[1])}`);
+    }
+    prevPos = byName;
+  });
+  // units: R2+ arrivals (rapid ingress / out-of-phase) + removals
+  const units = {};
+  FRAMES.forEach((f, i) => {
+    const counts = {};
+    for (const m of f.models || []){
+      if (m.t !== 'red' && m.t !== 'blue') continue;
+      const k = m.t + '|' + (m.u || 'n:' + (m.n || '?').toLowerCase());
+      counts[k] = (counts[k] || 0) + 1;
+      const u = units[k] = units[k] ||
+        {side: m.t, names: {}, lastI: i, peak: 0, wasV: false, arrI: null};
+      u.names[m.n || '?'] = (u.names[m.n || '?'] || 0) + 1;
+      u.lastI = i;
+      if (m.v) u.wasV = true;
+      else if (u.wasV && u.arrI == null) u.arrI = i;
+    }
+    for (const [k, n] of Object.entries(counts))
+      units[k].peak = Math.max(units[k].peak, n);
+  });
+  const uLabel = u => {
+    let bn = '?', bc = -1;
+    for (const [n, c2] of Object.entries(u.names)) if (c2 > bc){ bc = c2; bn = n; }
+    return u.peak > 1 ? `${bn} ×${u.peak}` : bn;
+  };
+  const arrG = {}, goneG = {};
+  for (const u of Object.values(units)){
+    if (u.arrI != null && (FRAMES[u.arrI].round || 0) >= 2)
+      (arrG[u.arrI + '|' + u.side] = arrG[u.arrI + '|' + u.side]
+        || {i: u.arrI, side: u.side, ns: []}).ns.push(uLabel(u));
+    // live: a unit briefly absent (mid-move pickup) would flash "removed" — only
+    // call it once it has been gone a few frames or the game is over
+    if (u.lastI < FRAMES.length - 1 && (ENDED || u.lastI < FRAMES.length - 4))
+      (goneG[u.lastI + '|' + u.side] = goneG[u.lastI + '|' + u.side]
+        || {i: u.lastI, side: u.side, ns: []}).ns.push(uLabel(u));
+  }
+  for (const g of Object.values(arrG)){
+    const w = winOf[g.i], ri = w != null && windows[w].active !== g.side;
+    add(g.i, g.side, g.ns.join(' + ') + ' from reserves'
+        + (ri ? " (opponent's turn!)" : ''));
+  }
+  for (const g of Object.values(goneG))
+    add(g.i, g.side, g.ns.join(' + ') + ' removed');
+  EVENTS = ev;
+  return ev;
+}
+function renderCallouts(){
+  const rEl = document.getElementById('calloutRed'), bEl = document.getElementById('calloutBlue');
+  if (!rEl || !FRAMES.length) return;
+  const evs = deriveEvents()[cur];
+  const t0 = Date.parse(FRAMES[0].taken_at);
+  const span = Math.max(Date.parse(FRAMES[FRAMES.length - 1].taken_at) - t0, 1);
+  const pct = Math.min(88, Math.max(12,
+    (Date.parse(FRAMES[cur].taken_at) - t0) / span * 100));
+  for (const [side, el] of [['red', rEl], ['blue', bEl]]){
+    el.innerHTML = '';
+    const msgs = evs ? evs[side] : [];
+    if (!msgs.length) continue;
+    const b = document.createElement('div');
+    b.className = 'ts-callout ' + side;
+    b.style.left = pct + '%';
+    b.textContent = msgs.join(' · ');
+    b.title = msgs.join('\n');
+    el.appendChild(b);
+  }
+}
 function show(n){
   cur = Math.max(0, Math.min(FRAMES.length - 1, n));
   labelEl.textContent = FRAMES.length ? `${frameLabel(FRAMES[cur])} (${cur + 1}/${FRAMES.length})` : 'no snapshots yet';
   ruler = null;
-  renderPanel(); draw(); updateClocks();
+  renderPanel(); draw(); updateClocks(); renderCallouts();
 }
 function setPlaying(on){
   playing = on; playBtn.innerHTML = playing ? '&#9646;&#9646;' : '&#9654;';
