@@ -661,6 +661,14 @@ function readModels(chunked)
                         g = gk,
                         s = facts.s,
                         v = res and 1 or nil,
+                        -- Position WITHIN the reserves board, normalised 0..1. The board is
+                        -- printed with labelled zones — DEEP STRIKE / STRATEGIC RESERVES /
+                        -- TRANSPORTS (8 numbered slots) — so where a model sits IS its reserve
+                        -- category, and which transport it rides. Sent raw (not classified) so
+                        -- the band thresholds live server-side and can be corrected from a
+                        -- recording without rebuilding and re-spawning the token.
+                        rx = res and round((p.x - res.x1) / math.max(res.x2 - res.x1, 0.001), 3) or nil,
+                        rz = res and round((p.z - res.z1) / math.max(res.z2 - res.z1, 0.001), 3) or nil,
                     })
                     table.insert(guids, g)
                 end
