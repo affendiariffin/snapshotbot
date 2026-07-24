@@ -69,6 +69,8 @@ markerSide = markerSide or {}  -- status markers: which side's rack/hand placed 
 markerBagName = markerBagName or {}  -- marker GUID -> dispensing bag name when it differs
 sentGeom = sentGeom or {}      -- mesh keys already posted this session
 geomQueue = geomQueue or {}    -- model GUIDs awaiting a one-time geometry post
+sentRoster = sentRoster or {}  -- "unit|model name" pairs whose datasheet is already posted
+rosterQueue = rosterQueue or {} -- model GUIDs awaiting a one-time datasheet post
 
 function log(msg, color)
     broadcastToAll("[Snapshotbot] " .. tostring(msg), color or GREY)
@@ -635,6 +637,17 @@ function readModels(chunked)
                         sentGeom[gk] = true
                         table.insert(geomQueue, g)
                     end
+                    -- One datasheet post per (unit, model name): that pair IS the wargear
+                    -- choice, so 9 halberd Sacresants cost one post, not nine. Only the
+                    -- getDescription/getLuaScript calls in the pump are expensive — this is
+                    -- a table lookup, safe in the hot loop.
+                    if facts.u and name then
+                        local rk = facts.u .. "|" .. name
+                        if not sentRoster[rk] then
+                            sentRoster[rk] = true
+                            table.insert(rosterQueue, g)
+                        end
+                    end
                     local rot = obj.getRotation().y
                     table.insert(sigParts, string.format("%s:%.1f:%.1f:%.0f", g, p.x, p.z, rot))
                     table.insert(models, {
@@ -692,6 +705,39 @@ function pumpGeomQueue()
         end
         n = n + 1
     end
+end
+
+-- One-time datasheet post per (unit, model name). Yellowscribe puts a colour-tagged
+-- statline + weapon profiles + abilities in every model's Description, and the unit's
+-- `local unitData = {...}` table at the head of the LEADER model's script (the ~54KB
+-- shared boilerplate that follows starts at "local scriptingFunctions" — cut there, we
+-- want the list data, not the library). Model names alone pin the wargear CHOICE but not
+-- its profile, which forced post-game analysis to guess from BSData's full option menu.
+-- 1 per tick: these payloads are far bigger than a geom spec.
+function pumpRosterQueue()
+    if sessionSlug == nil or #rosterQueue == 0 then return end
+    local obj = getObjectFromGUID(table.remove(rosterQueue, 1))
+    if obj == nil or obj.isDestroyed() then return end
+    local ok = pcall(function()
+        local name = (cleanName(obj.getName()))
+        local body = {
+            slug = sessionSlug,
+            u = unitId(obj),
+            n = name,
+            t = modelTeam(obj),
+            d = string.sub(obj.getDescription() or "", 1, 8000),
+        }
+        local src = obj.getLuaScript() or ""
+        if src ~= "" then
+            local cut = string.find(src, "local scriptingFunctions", 1, true)
+            if cut then src = string.sub(src, 1, cut - 1) end
+            if string.find(src, "unitData", 1, true) then
+                body.data = string.sub(src, 1, 60000)
+            end
+        end
+        if body.u and body.n ~= "" then postJson("/api/roster", body, function() end) end
+    end)
+    return ok
 end
 
 ---------------------------------------------------------------------------
@@ -894,6 +940,7 @@ function pollCo()
             doSnapshot(nil, models, markers, loose)
         end
         pumpGeomQueue()
+        pumpRosterQueue()
     end)
     polling = false
     if not ok then remoteLog("error", "poll failed: " .. tostring(err)) end

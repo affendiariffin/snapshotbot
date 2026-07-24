@@ -31,7 +31,8 @@ def is_admin():
 # Per-IP sliding-window rate limits (teams-pairing pattern). No auth by design:
 # unguessable slugs gate reads, these gate writes, 30-day TTL cleans up the rest.
 _BUCKETS = {}
-_LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60, "geom": 30, "admin": 20}
+_LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60, "geom": 30, "admin": 20,
+           "roster": 30}
 
 GEOM_KEY_RE = re.compile(r"^\d{1,25}(-\d{1,25}){0,6}$")
 CARD_KEY_RE = re.compile(r"^[a-z0-9]{1,80}$")
@@ -179,6 +180,30 @@ def session_delete(slug):
     if _rate_limited("admin"):
         return _bad("rate limited", 429)
     if not db.delete_session(slug):
+        return _bad("unknown session", 404)
+    return jsonify({"ok": True})
+
+
+@api.post("/api/roster")
+def roster_submit():
+    # Token posts each (unit, model name) pair once per session: the Yellowscribe
+    # Description (statline + weapon profiles + abilities as ACTUALLY equipped) and,
+    # for the unit's leader model, its `local unitData = {...}` table. This is the
+    # only record of what the list was — BSData only knows the menu of options.
+    if _rate_limited("roster"):
+        return _bad("rate limited", 429)
+    body = request.get_json(force=True, silent=True) or {}
+    slug = str(body.get("slug") or "")[:32]
+    unit_id = str(body.get("u") or "")[:64]
+    model_name = str(body.get("n") or "")[:120]
+    if not slug or not unit_id or not model_name:
+        return _bad("slug, u and n required")
+    team = body.get("t")
+    team = str(team)[:8] if team in ("red", "blue") else None
+    descr = str(body.get("d") or "")[:8000]
+    unit_data = body.get("data")
+    unit_data = str(unit_data)[:60000] if isinstance(unit_data, str) and unit_data else None
+    if not db.roster_put(slug, unit_id, model_name, team, descr, unit_data):
         return _bad("unknown session", 404)
     return jsonify({"ok": True})
 

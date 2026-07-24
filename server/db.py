@@ -70,6 +70,24 @@ CREATE TABLE IF NOT EXISTS sb_mesh_geom (
     error       TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The Yellowscribe datasheet as FIELDED: every model carries a Description holding its
+-- statline + weapon profiles + abilities, and each unit's leader model carries a
+-- `local unitData = {...}` table. The snapshot stream only keeps the model NAME, which
+-- pins the wargear choice but not its profile — so post-game analysis had to read weapon
+-- stats out of BSData, which lists the whole MENU and cannot know what was taken. That
+-- misread the Sacresants' halberds as the Superior's spear (2026-07-24). Captured once per
+-- (unit, model name), session-scoped because it describes THIS list.
+CREATE TABLE IF NOT EXISTS sb_rosters (
+    session_id  BIGINT NOT NULL REFERENCES sb_sessions(id) ON DELETE CASCADE,
+    unit_id     TEXT NOT NULL,
+    model_name  TEXT NOT NULL,
+    team        TEXT,
+    descr       TEXT NOT NULL DEFAULT '',
+    unit_data   TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (session_id, unit_id, model_name)
+);
 """
 
 
@@ -289,6 +307,11 @@ def get_session_bundle(slug, after_id=0):
         notes = conn.execute(
             "SELECT cell_key, body FROM sb_notes WHERE session_id = %s", (sess["id"],)
         ).fetchall()
+        rosters = conn.execute(
+            "SELECT unit_id, model_name, team, descr, unit_data FROM sb_rosters"
+            " WHERE session_id = %s ORDER BY unit_id, model_name",
+            (sess["id"],),
+        ).fetchall()
         # Zone backfill needs the deployment-era frames even on incremental polls,
         # where the bundle window starts mid-game.
         early = None
@@ -319,6 +342,7 @@ def get_session_bundle(slug, after_id=0):
                 for s in snaps
             ],
             "notes": {n["cell_key"]: n["body"] for n in notes},
+            "rosters": [dict(r) for r in rosters],
         }
         return backfill_teams(bundle, early)
 
@@ -346,6 +370,24 @@ def list_sessions(limit=100):
                 }
             )
         return out
+
+
+def roster_put(slug, unit_id, model_name, team, descr, unit_data):
+    with get_conn() as conn:
+        sid = _session_id(conn, slug)
+        if sid is None:
+            return False
+        conn.execute(
+            "INSERT INTO sb_rosters (session_id, unit_id, model_name, team, descr, unit_data)"
+            " VALUES (%s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (session_id, unit_id, model_name) DO UPDATE SET"
+            "   team = COALESCE(EXCLUDED.team, sb_rosters.team),"
+            "   descr = CASE WHEN EXCLUDED.descr <> '' THEN EXCLUDED.descr ELSE sb_rosters.descr END,"
+            # only the leader model carries unit_data — never let a squadmate's NULL erase it
+            "   unit_data = COALESCE(EXCLUDED.unit_data, sb_rosters.unit_data)",
+            (sid, unit_id, model_name, team, descr, unit_data),
+        )
+        return True
 
 
 def card_put(key, name, img):
