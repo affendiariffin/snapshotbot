@@ -1132,7 +1132,7 @@ function updateClocks(){
    VP bookings netted per side per turn window, scoring-speculated secondary
    exits (ΔS/ΔCP window signals), genuine marker first-drops (repositioned
    tokens move-matched away), R2+ reserve arrivals, unit removals. */
-let EVENTS = null, evFrameCount = 0;   // EVENTS[i] = {red:[], blue:[]}
+let EVENTS = null, evFrameCount = 0, evRosterRev = -1;   // EVENTS[i] = {red:[], blue:[]}
 // Mission-scoring knowledge (server/static/mission_scoring.json — transcribed
 // from the official card faces): secondary timing/values/maxes + per-primary
 // per-round scoring ceilings. Powers the context-awareness checks below.
@@ -1141,6 +1141,42 @@ function msLoaded(d){
   MS = d || {secondaries: {}, primaries: {}};
   EVENTS = null;
   if (FRAMES.length) renderCallouts();
+}
+/* Yellowscribe roster (server-enriched in server/roster.py): unit_id -> unique
+   label + keyword set. Callouts name units off THIS, never off a model name —
+   a list routinely fields several copies of one datasheet. */
+let ROSTER = {}, rosterRev = 0, rosterSig = null;
+function loadRosters(rows){
+  // Live polls resend the whole roster every 5s; recomputing every event in the game
+  // each time would be pure waste, so bail unless it actually changed.
+  const sig = (rows || []).map(r => r.unit_id + '/' + (r.label || '')).join(',');
+  if (sig === rosterSig) return;
+  rosterSig = sig;
+  const map = {};
+  for (const r of rows || []){
+    if (!r || !r.unit_id || map[r.unit_id]) continue;
+    map[r.unit_id] = {
+      label: r.label || r.unit_name || null,
+      kw: new Set(String(r.keywords || '').split(',')
+                  .map(s => s.trim().toLowerCase()).filter(Boolean)),
+    };
+  }
+  ROSTER = map; rosterRev++; EVENTS = null;
+}
+// Secondaries whose scoring condition is a KEYWORD on the destroyed unit. Only
+// these two gate on the victim's datasheet, so only these two can be checked.
+const KILL_CARDS = {
+  'bring it down': {kw: ['vehicle', 'monster'], tag: 'Vehicle/Monster', name: 'Bring It Down'},
+  'assassination': {kw: ['character'], tag: 'Character', name: 'Assassination'},
+};
+// The reserves board is PRINTED with its categories, so an arrival's origin is read, not
+// guessed (server/zones.py). Transport bays are numbered slots — which hull sat in bay 3 is
+// not recorded, so the bay number is as far as this can honestly go.
+function zoneWord(z){
+  if (z === 'DEEP STRIKE') return 'deep strikes in';
+  if (z === 'STRATEGIC RESERVES') return 'arrives from Strategic Reserves';
+  const m = /^TRANSPORT\s+(\d+)$/.exec(z || '');
+  return m ? `disembarks (transport bay ${m[1]})` : 'from reserves';
 }
 if (EMBEDDED) msLoaded(EMBEDDED.mission_scoring);
 else fetch('/static/mission_scoring.json').then(r => r.json()).then(msLoaded).catch(() => msLoaded(null));
@@ -1198,8 +1234,8 @@ function evPlace(x, z){
   return parts.join(', ');
 }
 function deriveEvents(){
-  if (EVENTS && evFrameCount === FRAMES.length) return EVENTS;
-  evFrameCount = FRAMES.length;
+  if (EVENTS && evFrameCount === FRAMES.length && evRosterRev === rosterRev) return EVENTS;
+  evFrameCount = FRAMES.length; evRosterRev = rosterRev;
   const ev = FRAMES.map(() => null);
   const add = (i, side, text) => {
     (ev[i] = ev[i] || {red: [], blue: []})[side === 'blue' ? 'blue' : 'red'].push(text);
@@ -1351,49 +1387,88 @@ function deriveEvents(){
   // squads without yellowscribe ids MERGE under one key, hiding a whole
   // squad's death while its twin lives (session 45 Warp Talons, frame ~211) —
   // the count series is kept per key so sustained multi-model drops fire too.
-  const units = {}, series = {};
+  const units = {}, series = {}, matSer = {}, resZone = {};
   FRAMES.forEach((f, i) => {
-    const counts = {};
+    const counts = {}, mat = {}, zones = {};
     for (const m of f.models || []){
       if (m.t !== 'red' && m.t !== 'blue') continue;
       const k = m.t + '|' + (m.u || 'n:' + (m.n || '?').toLowerCase());
       counts[k] = (counts[k] || 0) + 1;
+      if (m.v){ if (m.zone) zones[k] = m.zone; } else mat[k] = (mat[k] || 0) + 1;
       const u = units[k] = units[k] ||
-        {side: m.t, names: {}, lastI: i, peak: 0, wasV: false, arrI: null};
+        {side: m.t, uid: m.u || null, names: {}, lastI: i, peak: 0, arrI: null,
+         arrZone: null, wasRes: false, matMax: 0};
       u.names[m.n || '?'] = (u.names[m.n || '?'] || 0) + 1;
       u.lastI = i;
-      if (m.v) u.wasV = true;
-      else if (u.wasV && u.arrI == null) u.arrI = i;
     }
-    for (const [k, n] of Object.entries(counts)){
-      units[k].peak = Math.max(units[k].peak, n);
-      (series[k] = series[k] || {}).last = undefined;
+    for (const [k, n] of Object.entries(counts)) units[k].peak = Math.max(units[k].peak, n);
+    for (const k of Object.keys(units)){
+      const s = series[k] = series[k] || {}, ms = matSer[k] = matSer[k] || {};
+      s[i] = counts[k] || 0; ms[i] = mat[k] || 0;
+      // An arrival is ON-MAT GROWTH OUT OF THE RESERVE BOARD, not a unit's first
+      // appearance: half a Yellowscribe "unit" often walks on while the other half
+      // rides, so both states coexist from frame 0 and a first-sighting test fires
+      // on whichever model the loop happened to read first.
+      // Order matters: wasRes/matMax must describe EARLIER frames only, or a unit that
+      // half-deploys and half-rides "arrives" in frame 0. Compare against the running max,
+      // not the previous frame — a model picked up mid-move dips the count for a frame or
+      // two, and that dip would otherwise read as a fresh arrival on the way back.
+      const u = units[k];
+      if (u.arrI == null && u.wasRes && ms[i] > (u.matMax || 0)){
+        u.arrI = i; u.arrZone = resZone[k] || null;
+      }
+      u.matMax = Math.max(u.matMax || 0, ms[i]);
+      if (s[i] > ms[i]) u.wasRes = true;
+      if (zones[k]) resZone[k] = zones[k];
     }
-    for (const k of Object.keys(series)) (series[k][i] = counts[k] || 0);
   });
-  const uLabel = u => {
+  const uName = u => {
+    const r = u.uid && ROSTER[u.uid];
+    if (r && r.label) return r.label;      // Yellowscribe datasheet name, made unique
     let bn = '?', bc = -1;
     for (const [n, c2] of Object.entries(u.names)) if (c2 > bc){ bc = c2; bn = n; }
-    return u.peak > 1 ? `${bn} ×${u.peak}` : bn;
+    return bn;
+  };
+  const uLabel = u => u.peak > 1 ? `${uName(u)} ×${u.peak}` : uName(u);
+  // Which of the opponent's held secondaries this removal could feed. Gated on the card
+  // actually being in their hand at that frame AND the victim carrying the keyword — a
+  // guess at neither end.
+  const killTag = (i, side, us) => {
+    const opp = side === 'red' ? 'blue' : 'red';
+    const held = new Set(((FRAMES[i].cards || {})[opp + '_secondary'] || [])
+                         .map(c => cleanCard(c).toLowerCase()));
+    const hits = [];
+    for (const [card, spec] of Object.entries(KILL_CARDS)){
+      if (!held.has(card)) continue;
+      if (us.some(u => { const r = u.uid && ROSTER[u.uid];
+                         return r && spec.kw.some(k => r.kw.has(k)); }))
+        hits.push(`${spec.tag} — feeds ${opp}'s ${spec.name}`);
+    }
+    return hits.length ? ' (' + hits.join('; ') + ')' : '';
   };
   const arrG = {}, goneG = {};
   for (const u of Object.values(units)){
-    if (u.arrI != null && (FRAMES[u.arrI].round || 0) >= 2)
-      (arrG[u.arrI + '|' + u.side] = arrG[u.arrI + '|' + u.side]
-        || {i: u.arrI, side: u.side, ns: []}).ns.push(uLabel(u));
+    if (u.arrI != null && (FRAMES[u.arrI].round || 0) >= 2){
+      const k = u.arrI + '|' + u.side + '|' + (u.arrZone || '');
+      (arrG[k] = arrG[k] || {i: u.arrI, side: u.side, zone: u.arrZone, us: []}).us.push(u);
+    }
     // live: a unit briefly absent (mid-move pickup) would flash "removed" — only
     // call it once it has been gone a few frames or the game is over
     if (u.lastI < FRAMES.length - 1 && (ENDED || u.lastI < FRAMES.length - 4))
       (goneG[u.lastI + '|' + u.side] = goneG[u.lastI + '|' + u.side]
-        || {i: u.lastI, side: u.side, ns: []}).ns.push(uLabel(u));
+        || {i: u.lastI, side: u.side, us: []}).us.push(u);
   }
   for (const g of Object.values(arrG)){
     const w = winOf[g.i], ri = w != null && windows[w].active !== g.side;
-    add(g.i, g.side, g.ns.join(' + ') + ' from reserves'
-        + (ri ? " (opponent's turn!)" : ''));
+    // Out-of-phase reads differently by origin: reserves arriving on the opponent's turn
+    // is Rapid Ingress; a DISEMBARK on their turn usually means the transport just died.
+    const oot = !ri ? '' : /^TRANSPORT/.test(g.zone || '')
+      ? ' (their turn — transport destroyed?)' : " (opponent's turn!)";
+    add(g.i, g.side, g.us.map(uLabel).join(' + ') + ' ' + zoneWord(g.zone) + oot);
   }
   for (const g of Object.values(goneG))
-    add(g.i, g.side, g.ns.join(' + ') + ' removed');
+    add(g.i, g.side, g.us.map(uLabel).join(' + ') + ' removed'
+        + killTag(g.i, g.side, g.us));
   // sustained multi-model drop (>=3 in one step, survivors remain >=4 frames)
   for (const [k, ser] of Object.entries(series)){
     const u = units[k];
@@ -1403,11 +1478,7 @@ function deriveEvents(){
         let sustained = true;
         for (let j = i + 1; j <= Math.min(i + 4, FRAMES.length - 1); j++)
           if ((ser[j] || 0) > b2) sustained = false;
-        if (sustained){
-          let bn = '?', bc = -1;
-          for (const [n, c2] of Object.entries(u.names)) if (c2 > bc){ bc = c2; bn = n; }
-          add(i, u.side, `${bn} −${a - b2} models (${b2} left)`);
-        }
+        if (sustained) add(i, u.side, `${uName(u)} −${a - b2} models (${b2} left)`);
       }
     }
   }
@@ -1577,6 +1648,9 @@ function applyDerivedArmy(){
 function ingest(sess, first){
   META = sess.mission_meta || {};
   ENDED = sess.ended_at != null;
+  // Re-read every poll, not just the first: roster capture finishes seconds AFTER the
+  // token starts snapshotting, so a live game's first bundles carry no rosters at all.
+  if (sess.rosters) loadRosters(sess.rosters);
   const wasAtEnd = cur >= FRAMES.length - 1;
   for (const s of sess.snapshots){
     if (FLIPPED) flipFrame(s);

@@ -6,6 +6,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from server.roster import enrich_rosters
 from server.zones import backfill_teams, tag_reserve_zones
 
 # Retention window for sessions and everything under them (Fendi: 30 days, no archive).
@@ -355,7 +356,7 @@ def get_session_bundle(slug, after_id=0):
             "notes": {n["cell_key"]: n["body"] for n in notes},
             "rosters": [dict(r) for r in rosters],
         }
-        return tag_reserve_zones(backfill_teams(bundle, early))
+        return enrich_rosters(tag_reserve_zones(backfill_teams(bundle, early)))
 
 
 def list_sessions(limit=100):
