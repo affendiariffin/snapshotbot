@@ -78,6 +78,11 @@ CREATE TABLE IF NOT EXISTS sb_mesh_geom (
 -- stats out of BSData, which lists the whole MENU and cannot know what was taken. That
 -- misread the Sacresants' halberds as the Superior's spear (2026-07-24). Captured once per
 -- (unit, model name), session-scoped because it describes THIS list.
+-- PROVENANCE: Yellowscribe generates FROM BSData, so the rule TEXT stored here is NOT an
+-- independent source -- it is warhammer/data/rules_db's own upstream and carries the same
+-- release lag (the captured Junith Eruita is missing the v1.1 dataslate, exactly like
+-- BSData). Treat this as authoritative for SELECTION -- which models and wargear were
+-- actually taken, which BSData structurally cannot know -- and never as a rules check.
 CREATE TABLE IF NOT EXISTS sb_rosters (
     session_id  BIGINT NOT NULL REFERENCES sb_sessions(id) ON DELETE CASCADE,
     unit_id     TEXT NOT NULL,
