@@ -223,3 +223,44 @@ def backfill_teams(bundle, early=None):
             elif not m.get("u") and (m.get("n") or "").lower() in nclaim:
                 m["t"] = nclaim[(m.get("n") or "").lower()]
     return bundle
+
+
+# --- Reserves-board zones -------------------------------------------------------------
+# The Reinforcements and Reserves board is PRINTED with labelled zones, so a model's
+# position on it declares its reserve category outright -- no inference (Fendi, 2026-07-24).
+# The bands are FULL-WIDTH ROWS: rz alone picks the category, rx only picks the transport
+# slot within the two TRANSPORTS rows. Do not treat the printed label text as the extent of
+# a zone; a model far left or right of the "STRATEGIC RESERVES" caption is still in that row.
+#
+# Calibrated 2026-07-24 against a deliberate placement (12 models, all 4 categories), and
+# corroborated by obe_a7Ek behaviour: Vahl + Paragons (deep struck into the enemy DZ) sat at
+# LOW raw z, the Dominions (verified disembarking beside hulls) sat at HIGH raw z -- same
+# direction, so rz runs top -> bottom.
+#   rz: 0 = DEEP STRIKE edge -> 1 = far TRANSPORTS edge, four equal rows
+#   rx: slot 1 sits at HIGH rx, i.e. MIRRORED vs the printed 1..4 numbering
+RESERVE_ROWS = ("DEEP STRIKE", "STRATEGIC RESERVES", "TRANSPORT", "TRANSPORT")
+
+
+def reserve_zone(rx, rz):
+    if rx is None or rz is None:
+        return None
+    row = min(3, max(0, int(rz * 4)))
+    if row < 2:
+        return RESERVE_ROWS[row]
+    col = 3 - min(3, max(0, int(rx * 4)))
+    return f"TRANSPORT {(row - 2) * 4 + col + 1}"
+
+
+def tag_reserve_zones(bundle):
+    """Attach `zone` to every reserve model that carries board coordinates.
+
+    Computed once here so the viewer, the analyze-game cruncher and the offline download
+    all read the same label -- and so the thresholds can be corrected without rebuilding
+    and re-spawning the token.
+    """
+    for snap in bundle.get("snapshots") or []:
+        for m in snap.get("models") or []:
+            z = reserve_zone(m.get("rx"), m.get("rz"))
+            if z:
+                m["zone"] = z
+    return bundle

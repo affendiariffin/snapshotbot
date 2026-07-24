@@ -499,24 +499,45 @@ function layoutReserves(fr){
     const dir = side === 'red' ? -1 : 1;
     const xEdge = dir * (HX + 1.5);
     const innerW = RGUT - 2;
-    const groups = new Map();
+    // Group by the board's PRINTED zone first (server tags `zone` from rx/rz), then by
+    // yellowscribe unit inside it. The reserves board states what kind of reserve each
+    // model is — deep strike vs strategic reserves vs which transport it rides — and that
+    // distinction changes how a game reads: an embarked squad is mounted and mobile, not
+    // idle. Ordering is fixed, not first-seen, so the gutter doesn't reshuffle per frame.
+    const ZORDER = z2 => z2 === 'DEEP STRIKE' ? 0 : z2 === 'STRATEGIC RESERVES' ? 1
+                       : z2 && z2.startsWith('TRANSPORT') ? 2 + (parseInt(z2.slice(10), 10) || 0)
+                       : 99;
+    const byZone = new Map();
     for (const m of list){
+      const zk = m.zone || '';                       // '' = pre-2026-07-24 token, no zones
+      if (!byZone.has(zk)) byZone.set(zk, new Map());
+      const groups = byZone.get(zk);
       const k = m.u || 'n:' + (m.n || '').toLowerCase();
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(m);
     }
+    const zoneKeys = [...byZone.keys()].sort((a, b) => ZORDER(a) - ZORDER(b));
+    fr._resZones = fr._resZones || {};
+    fr._resZones[side] = [];
     let z = HZ - 2.2;                                // header clearance
-    for (const [, ms] of groups){
-      let cx = 0, rowH = 0, zRow = z;
-      for (const m of ms){
-        const [w, h] = resFootprint(m);
-        if (cx > 0 && cx + w > innerW){ zRow -= rowH + 0.25; cx = 0; rowH = 0; }
-        m.x = xEdge + dir * (cx + w / 2);
-        m.z = zRow - h / 2;
-        m.r = 0;
-        cx += w + 0.25; rowH = Math.max(rowH, h);
+    for (const zk of zoneKeys){
+      if (zk){                                       // label the band, then indent under it
+        z -= 0.35;
+        fr._resZones[side].push({label: zk, z: z});
+        z -= 1.15;
       }
-      z = zRow - rowH - 1.1;                         // gap between units
+      for (const [, ms] of byZone.get(zk)){
+        let cx = 0, rowH = 0, zRow = z;
+        for (const m of ms){
+          const [w, h] = resFootprint(m);
+          if (cx > 0 && cx + w > innerW){ zRow -= rowH + 0.25; cx = 0; rowH = 0; }
+          m.x = xEdge + dir * (cx + w / 2);
+          m.z = zRow - h / 2;
+          m.r = 0;
+          cx += w + 0.25; rowH = Math.max(rowH, h);
+        }
+        z = zRow - rowH - 1.1;                       // gap between units
+      }
     }
   }
 }
@@ -619,6 +640,17 @@ function draw(){
       const [hx, hy] = W2S(dir * (HX + 1.5 + (RGUT - 2) / 2), HZ - 0.6);
       ctx.fillStyle = '#5a6080';
       ctx.fillText('RESERVES / TRANSPORTS', hx, hy);
+    }
+    // Per-zone captions, straight off the board's printed labels.
+    const zbands = (FRAMES[cur] && FRAMES[cur]._resZones) || {};
+    ctx.font = '600 ' + (9 * devicePixelRatio) + 'px Segoe UI';
+    for (const side of ['red', 'blue']){
+      const dir = side === 'red' ? -1 : 1;
+      for (const band of (zbands[side] || [])){
+        const [bx, by] = W2S(dir * (HX + 1.5 + (RGUT - 2) / 2), band.z);
+        ctx.fillStyle = side === 'red' ? '#8a4a55' : '#4a5f8a';
+        ctx.fillText(band.label, bx, by);
+      }
     }
   }
 
