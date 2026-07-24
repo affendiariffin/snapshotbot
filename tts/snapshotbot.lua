@@ -722,30 +722,61 @@ end
 -- want the list data, not the library). Model names alone pin the wargear CHOICE but not
 -- its profile, which forced post-game analysis to guess from BSData's full option menu.
 -- 1 per tick: these payloads are far bigger than a geom spec.
+-- Reading is cheap, POSTing is not: one row per 5s tick meant a 27-row army took ~2.5
+-- minutes to land. Rows are BATCHED into a single request instead (~4 requests, ~20s), and
+-- the one genuinely expensive host call — getLuaScript() on a leader returns the ~54KB
+-- Yellowscribe boilerplate — is capped per tick and skipped entirely on non-leaders, which
+-- Yellowscribe tags for us. Nothing here is urgent: the roster cannot change mid-game.
+ROSTER_ROWS_PER_TICK = 8
+ROSTER_SCRIPTS_PER_TICK = 2
+
+function isLeaderModel(obj)
+    for _, t in ipairs(obj.getTags() or {}) do
+        if t == "leaderModel" then return true end
+    end
+    return false
+end
+
 function pumpRosterQueue()
     if sessionSlug == nil or #rosterQueue == 0 then return end
-    local obj = getObjectFromGUID(table.remove(rosterQueue, 1))
-    if obj == nil or obj.isDestroyed() then return end
-    local ok = pcall(function()
-        local name = (cleanName(obj.getName()))
-        local body = {
-            slug = sessionSlug,
-            u = unitId(obj),
-            n = name,
-            t = modelTeam(obj),
-            d = string.sub(obj.getDescription() or "", 1, 8000),
-        }
-        local src = obj.getLuaScript() or ""
-        if src ~= "" then
-            local cut = string.find(src, "local scriptingFunctions", 1, true)
-            if cut then src = string.sub(src, 1, cut - 1) end
-            if string.find(src, "unitData", 1, true) then
-                body.data = string.sub(src, 1, 60000)
-            end
+    local rows, scripts, n = {}, 0, 0
+    while #rosterQueue > 0 and n < ROSTER_ROWS_PER_TICK do
+        n = n + 1
+        local obj = getObjectFromGUID(table.remove(rosterQueue, 1))
+        if obj ~= nil and not obj.isDestroyed() then
+            pcall(function()
+                local name = (cleanName(obj.getName()))
+                local u = unitId(obj)
+                if u == nil or name == "" then return end
+                local row = {
+                    u = u, n = name, t = modelTeam(obj),
+                    d = string.sub(obj.getDescription() or "", 1, 8000),
+                }
+                -- Only a leader carries unitData; everyone else's script is empty, so don't
+                -- pay for the call. Cap the big reads so one tick never stalls a frame.
+                if scripts < ROSTER_SCRIPTS_PER_TICK and isLeaderModel(obj) then
+                    scripts = scripts + 1
+                    local src = obj.getLuaScript() or ""
+                    if src ~= "" then
+                        local cut = string.find(src, "local scriptingFunctions", 1, true)
+                        if cut then src = string.sub(src, 1, cut - 1) end
+                        if string.find(src, "unitData", 1, true) then
+                            row.data = string.sub(src, 1, 60000)
+                            row.kw = string.match(src, 'keywords%s*=%s*"([^"]*)"')
+                            row.fkw = string.match(src, 'factionKeywords%s*=%s*"([^"]*)"')
+                        end
+                    end
+                elseif isLeaderModel(obj) then
+                    table.insert(rosterQueue, obj.getGUID())  -- retry next tick, still owed
+                    return
+                end
+                table.insert(rows, row)
+            end)
         end
-        if body.u and body.n ~= "" then postJson("/api/roster", body, function() end) end
-    end)
-    return ok
+    end
+    if #rows > 0 then
+        postJson("/api/roster", {slug = sessionSlug, rows = rows}, function() end)
+    end
 end
 
 ---------------------------------------------------------------------------

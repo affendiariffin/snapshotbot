@@ -194,18 +194,34 @@ def roster_submit():
         return _bad("rate limited", 429)
     body = request.get_json(force=True, silent=True) or {}
     slug = str(body.get("slug") or "")[:32]
-    unit_id = str(body.get("u") or "")[:64]
-    model_name = str(body.get("n") or "")[:120]
-    if not slug or not unit_id or not model_name:
-        return _bad("slug, u and n required")
-    team = body.get("t")
-    team = str(team)[:8] if team in ("red", "blue") else None
-    descr = str(body.get("d") or "")[:8000]
-    unit_data = body.get("data")
-    unit_data = str(unit_data)[:60000] if isinstance(unit_data, str) and unit_data else None
-    if not db.roster_put(slug, unit_id, model_name, team, descr, unit_data):
-        return _bad("unknown session", 404)
-    return jsonify({"ok": True})
+    if not slug:
+        return _bad("slug required")
+    # Batched form {slug, rows:[...]}; the single-row form is kept for older tokens.
+    rows = body.get("rows")
+    if not isinstance(rows, list):
+        rows = [body]
+    if len(rows) > 32:
+        return _bad("too many rows")
+    stored = 0
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        unit_id = str(r.get("u") or "")[:64]
+        model_name = str(r.get("n") or "")[:120]
+        if not unit_id or not model_name:
+            continue
+        team = r.get("t")
+        team = str(team)[:8] if team in ("red", "blue") else None
+        descr = str(r.get("d") or "")[:8000]
+        unit_data = r.get("data")
+        unit_data = str(unit_data)[:60000] if isinstance(unit_data, str) and unit_data else None
+        kw = " ".join(str(r.get(k) or "") for k in ("fkw", "kw")).strip()[:400] or None
+        if not db.roster_put(slug, unit_id, model_name, team, descr, unit_data, kw):
+            return _bad("unknown session", 404)
+        stored += 1
+    if not stored:
+        return _bad("no usable rows")
+    return jsonify({"ok": True, "stored": stored})
 
 
 @api.post("/api/geom")
