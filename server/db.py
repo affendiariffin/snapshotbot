@@ -96,6 +96,20 @@ CREATE TABLE IF NOT EXISTS sb_rosters (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (session_id, unit_id, model_name)
 );
+
+-- Token black box: the recorder POSTs its recent trace ring + state summary the
+-- moment it's removed from a table, so a recording that ended unexpectedly can be
+-- diagnosed later. Deliberately NOT tied to sb_sessions (no FK / cascade) — the
+-- diagnostic must outlive the 30-day session purge it's often used to explain.
+CREATE TABLE IF NOT EXISTS sb_token_logs (
+    id          BIGSERIAL PRIMARY KEY,
+    slug        TEXT,
+    guid        TEXT,
+    reason      TEXT,
+    version     TEXT,
+    payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 """
 
 
@@ -356,7 +370,13 @@ def get_session_bundle(slug, after_id=0):
             "notes": {n["cell_key"]: n["body"] for n in notes},
             "rosters": [dict(r) for r in rosters],
         }
-        return enrich_rosters(tag_reserve_zones(backfill_teams(bundle, early)))
+        bundle = enrich_rosters(tag_reserve_zones(backfill_teams(bundle, early)))
+        # unit_data is the leader-only ~54KB Yellowscribe Lua blob; enrich_rosters has
+        # already pulled unit_name/keywords out of it and nothing on the client reads it,
+        # so drop it before it rides every 5s poll (descr stays — the tooltip needs it).
+        for r in bundle.get("rosters") or []:
+            r.pop("unit_data", None)
+        return bundle
 
 
 def list_sessions(limit=100):
@@ -403,6 +423,22 @@ def roster_put(slug, unit_id, model_name, team, descr, unit_data, keywords=None,
             (sid, unit_id, model_name, team, descr, unit_data, keywords, unit_name),
         )
         return True
+
+
+def add_token_log(slug, guid, reason, version, payload):
+    # Store the token's on-removal black box. No session FK — it must survive the
+    # 30-day purge (a purged session is often exactly what we're diagnosing). Trim
+    # to the newest 300 so it can't grow without bound.
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO sb_token_logs (slug, guid, reason, version, payload)"
+            " VALUES (%s, %s, %s, %s, %s)",
+            (slug, guid, reason, version, Jsonb(payload)),
+        )
+        conn.execute(
+            "DELETE FROM sb_token_logs WHERE id <= ("
+            " SELECT id FROM sb_token_logs ORDER BY id DESC OFFSET 300 LIMIT 1)"
+        )
 
 
 def card_put(key, name, img):

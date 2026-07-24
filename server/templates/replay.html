@@ -74,8 +74,12 @@
     border-radius:6px 6px 0 0;border:2px solid var(--border);box-shadow:0 4px 24px #0008;overflow:hidden}
   #board{width:100%;height:100%;display:block}
   #board.ruler,#board.doodle{cursor:crosshair}
-  #tooltip{position:absolute;pointer-events:none;background:#000c;border:1px solid var(--border);
-    border-radius:4px;padding:4px 8px;font-size:.8rem;display:none;z-index:5;white-space:nowrap}
+  #tooltip{position:fixed;pointer-events:none;background:#000d;border:1px solid var(--border);
+    border-radius:5px;padding:6px 9px;font-size:.8rem;display:none;z-index:50;max-width:340px}
+  .tt-head{white-space:nowrap}
+  .tt-w{color:#7bc596;font-weight:600}
+  .tt-ds{white-space:pre-wrap;font-size:.72rem;line-height:1.34;color:#c9cdd8;
+    margin-top:5px;padding-top:5px;border-top:1px solid var(--border)}
   .toolbar{display:flex;align-items:center;gap:6px;width:100%;background:var(--panel);
     border:2px solid var(--border);border-top:none;padding:6px 8px;flex-wrap:wrap}
   .btn{background:var(--card);color:var(--text);border:1px solid var(--border);padding:6px 14px;
@@ -199,6 +203,7 @@
   </span>
 </div>
 <div id="toast"></div>
+<div id="tooltip"></div>
 
 <div class="page-layout">
 <div class="center-col">
@@ -208,7 +213,6 @@
 <div class="viewer-wrap">
 <div class="board-wrap">
   <canvas id="board"></canvas>
-  <div id="tooltip"></div>
 </div>
 <div class="toolbar">
   <button class="btn" id="toolRuler">&#128207; Ruler</button>
@@ -218,7 +222,7 @@
   <button class="btn" id="dUndo">&#8630;</button>
   <button class="btn" id="dClear">&#10005;</button>
   <div class="tool-sep"></div>
-  <div class="hint" id="hint">hover = unit name</div>
+  <div class="hint" id="hint">hover = datasheet</div>
 </div>
 <div class="controls">
   <button class="btn" id="prev">&#8592;</button>
@@ -779,25 +783,20 @@ cv.addEventListener('mousemove', e => {
   const m = hitModel(wx, wz);
   if (m !== hoverModel){ hoverModel = m; draw(); }
   if (m){
-    tip.style.display = 'block';
-    tip.style.left = (e.offsetX + 14) + 'px'; tip.style.top = (e.offsetY + 8) + 'px';
-    const g = m._g, b = modelBase(m);
-    const kind = m._hull ? 'hull' : 'base';
-    let bl = g
-      ? (Array.isArray(g.mm) ? g.mm[0] + '×' + g.mm[1] + 'mm ' + kind : g.mm + 'mm ' + kind)
-      : (Array.isArray(b) ? (b[0].toFixed(1) + '″ × ' + b[1].toFixed(1) + '″ ' + kind)
-                          : (b.toFixed(1) + '″ ' + kind));
-    if (m.w) bl += ' · ' + m.w + ' W';
     const col = m.t === 'red' ? '#e05555' : m.t === 'blue' ? '#5588e0' : '#9aa2b5';
-    tip.innerHTML = '<b style="color:' + col + '">' + (m.n || 'model') + '</b><br><span style="color:#5a6080">' + bl + '</span>';
+    const ds = m.u && DSHEET[m.u + '|' + m.n];   // the Yellowscribe datasheet, as fielded
+    tip.innerHTML =
+      '<div class="tt-head"><b style="color:' + col + '">' + esc(m.n || 'model') + '</b>' +
+      (m.w ? ' <span class="tt-w">' + esc(m.w) + ' W</span>' : '') + '</div>' +
+      (ds ? '<div class="tt-ds">' + ds + '</div>' : '');
+    placeTip(e);
   } else {
     const mk = hitMarker(wx, wz);
     if (mk){
-      tip.style.display = 'block';
-      tip.style.left = (e.offsetX + 14) + 'px'; tip.style.top = (e.offsetY + 8) + 'px';
       const col = mk.t === 'red' ? '#e05555' : mk.t === 'blue' ? '#5588e0' : '#9aa2b5';
-      tip.innerHTML = '<b style="color:' + col + '">' + esc(markerName(mk)) + '</b>' +
-        (mk.t ? '<br><span style="color:#5a6080">placed by ' + mk.t + '</span>' : '');
+      tip.innerHTML = '<div class="tt-head"><b style="color:' + col + '">' + esc(markerName(mk)) + '</b>' +
+        (mk.t ? ' <span style="color:#5a6080">· placed by ' + mk.t + '</span>' : '') + '</div>';
+      placeTip(e);
     } else tip.style.display = 'none';
   }
 });
@@ -809,7 +808,7 @@ function setTool(t){
   for (const [id, name] of [['toolRuler', 'ruler'], ['toolDoodle', 'doodle']])
     document.getElementById(id).classList.toggle('active', name === tool);
   cv.className = tool === 'pan' ? '' : tool;
-  const hints = {pan: 'hover = unit name',
+  const hints = {pan: 'hover = datasheet',
                  ruler: 'drag between models — snaps to bases, edge-to-edge inches · click Ruler again to exit',
                  doodle: 'draw on the board — strokes stick to this frame · click Doodle again to exit'};
   document.getElementById('hint').textContent = hints[tool];
@@ -830,6 +829,36 @@ function pill(name, tag){
   return `<div class="card-pill">${esc(name)}${tag ? `<span class="pill-tag">${tag}</span>` : ''}</div>`;
 }
 function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// Yellowscribe writes the datasheet into a model's Description as flat colour runs:
+// [rrggbb] sets the colour, [-] resets to default. The tags DON'T nest (the statline
+// closes with a bare [-][-]), so treat them as a running colour, not open/close spans.
+const DS_TAG = /\[[0-9a-fA-F]{6}\]|\[-\]/g;
+function dsHtml(descr){
+  let out = '', cur = null, last = 0, m;
+  DS_TAG.lastIndex = 0;
+  const push = txt => { if (txt) out += cur ? '<span style="color:#' + cur + '">' + esc(txt) + '</span>' : esc(txt); };
+  while ((m = DS_TAG.exec(descr)) !== null){
+    push(descr.slice(last, m.index));
+    last = m.index + m[0].length;
+    cur = m[0] === '[-]' ? null : m[0].slice(1, 7);
+  }
+  push(descr.slice(last));
+  return out.trim();
+}
+// Fixed-position tooltip: keep it fully on-screen — flip left of the cursor near the
+// right edge, lift it up near the bottom (a full datasheet is tall). Measure after the
+// content is set, so offsetWidth/Height are real.
+function placeTip(e){
+  tip.style.display = 'block';
+  const w = tip.offsetWidth, h = tip.offsetHeight, pad = 10, gap = 14;
+  let left = e.clientX + gap;
+  if (left + w > innerWidth - pad) left = e.clientX - gap - w;
+  left = Math.max(pad, Math.min(left, innerWidth - pad - w));
+  let top = e.clientY + 8;
+  if (top + h > innerHeight - pad) top = e.clientY - 8 - h;
+  top = Math.max(pad, Math.min(top, innerHeight - pad - h));
+  tip.style.left = left + 'px'; tip.style.top = top + 'px';
+}
 // Actual card faces from the LCT mod (sb_card_images), shown inline — no links
 // to third-party rules sites. Missing image → plain pill via onerror.
 function cardKey(name){
@@ -1145,23 +1174,27 @@ function msLoaded(d){
 /* Yellowscribe roster (server-enriched in server/roster.py): unit_id -> unique
    label + keyword set. Callouts name units off THIS, never off a model name —
    a list routinely fields several copies of one datasheet. */
-let ROSTER = {}, rosterRev = 0, rosterSig = null;
+let ROSTER = {}, DSHEET = {}, rosterRev = 0, rosterSig = null;
 function loadRosters(rows){
   // Live polls resend the whole roster every 5s; recomputing every event in the game
   // each time would be pure waste, so bail unless it actually changed.
   const sig = (rows || []).map(r => r.unit_id + '/' + (r.label || '')).join(',');
   if (sig === rosterSig) return;
   rosterSig = sig;
-  const map = {};
+  const map = {}, ds = {};
   for (const r of rows || []){
-    if (!r || !r.unit_id || map[r.unit_id]) continue;
+    if (!r || !r.unit_id) continue;
+    // Datasheet is captured per MODEL (a Superior's statline/wargear differs from the
+    // squad's), so key the tooltip lookup by unit_id + model name — NOT deduped by unit.
+    if (r.model_name && r.descr) ds[r.unit_id + '|' + r.model_name] = dsHtml(r.descr);
+    if (map[r.unit_id]) continue;
     map[r.unit_id] = {
       label: r.label || r.unit_name || null,
       kw: new Set(String(r.keywords || '').split(',')
                   .map(s => s.trim().toLowerCase()).filter(Boolean)),
     };
   }
-  ROSTER = map; rosterRev++; EVENTS = null;
+  ROSTER = map; DSHEET = ds; rosterRev++; EVENTS = null;
 }
 // Secondaries whose scoring condition is a KEYWORD on the destroyed unit. Only
 // these two gate on the victim's datasheet, so only these two can be checked.

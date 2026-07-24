@@ -76,11 +76,24 @@ function log(msg, color)
     broadcastToAll("[Snapshotbot] " .. tostring(msg), color or GREY)
 end
 
+-- Black box (Fendi, 2026-07-24): a rolling ring of the token's own notable events,
+-- posted to the server the moment the token is removed so a recording that ended
+-- unexpectedly can be diagnosed after the fact. In-memory only until then — never
+-- a WebRequest per line — and globals so it survives Execute-Lua re-pushes in dev.
+bornAt = bornAt or os.time()
+traceRing = traceRing or {}
+
+function trace(msg)
+    traceRing[#traceRing + 1] = {t = os.time(), m = tostring(msg)}
+    while #traceRing > 40 do table.remove(traceRing, 1) end
+end
+
 -- Every error lands in the server's Railway logs (visible with `railway logs`),
 -- tagged with session + token GUID. Chat only sees one red line per minute.
 lastErrBroadcast = lastErrBroadcast or 0
 
 function remoteLog(level, msg)
+    trace(level .. ": " .. tostring(msg))  -- errors/warns are the heart of the black box
     local body = {slug = sessionSlug, guid = self.getGUID(), level = level, msg = tostring(msg)}
     pcall(function()
         WebRequest.custom(SERVER_URL .. "/api/log", "POST", true, JSON.encode(body),
@@ -806,6 +819,7 @@ function dedupeCheck()
                 end
                 if theyWin then
                     log("duplicate Snapshotbot removed — one token per table is plenty", RED)
+                    trace("dedupe: yielding to token " .. tostring(obj.getGUID()))
                     quietDestroy = true  -- expected removal: no recording-stopped alarm
                     self.destruct()
                     return true
@@ -834,6 +848,7 @@ function tryStartSession()
         end
         sessionSlug = resp.slug
         sessionPath = resp.path
+        trace((resp.resumed and "adopted session " or "session started ") .. tostring(resp.slug))
         publishLink()
         log("recording — replay link in the Notebook (top of screen)", TEAL)
         doSnapshot(nil)
@@ -973,6 +988,11 @@ end
 function pollCo()
     local ok, err = pcall(function()
         tickCount = tickCount + 1
+        if tickCount % 24 == 0 then  -- ~2min heartbeat so the black box shows a timeline
+            trace("alive t=" .. tickCount .. (sessionSlug ~= nil
+                and (" since_post=" .. (lastPostAt > 0 and (os.time() - lastPostAt) or -1) .. "s")
+                or " no-session"))
+        end
         if tickCount % 12 == 1 and dedupeCheck() then return end  -- ~1/min belt-and-braces
         if sessionSlug == nil then
             tryStartSession()
@@ -1044,7 +1064,32 @@ function onDestroy()
             "[Snapshotbot] token removed — recording STOPPED. Respawn it to resume this game.",
             RED)
     end
-    pcall(remoteLog, "info", "token removed — session will seal itself")
+    -- Submit the black box. Fire-and-forget: the request is handed to TTS's network
+    -- layer before this object finishes tearing down, and the callback is a no-op so
+    -- nothing runs on the dead script. Invisible to the table — troubleshooting only.
+    pcall(function()
+        local now = os.time()
+        trace("onDestroy (" .. (quietDestroy and "quiet" or "removed") .. ")")
+        local body = {
+            slug = sessionSlug,
+            guid = self.getGUID(),
+            reason = quietDestroy and "quiet" or "removed",
+            version = TOKEN_VERSION,
+            payload = {
+                uptime_s = now - (bornAt or now),
+                since_last_post_s = lastPostAt > 0 and (now - lastPostAt) or nil,
+                had_session = sessionSlug ~= nil,
+                path = sessionPath,
+                ticks = tickCount,
+                geom_pending = #geomQueue,
+                roster_pending = #rosterQueue,
+                trace = traceRing,
+            },
+        }
+        WebRequest.custom(SERVER_URL .. "/api/errorlog", "POST", true, JSON.encode(body),
+            {["Content-Type"] = "application/json"}, function() end)
+    end)
+    print("[Snapshotbot] token removed — black box posted")
 end
 
 function onSave()
@@ -1063,6 +1108,7 @@ function onLoad(saved)
             markerBagName = st.mbags or {}
         end
     end
+    trace("onLoad v=" .. tostring(TOKEN_VERSION) .. " slug=" .. tostring(sessionSlug))
     -- No buttons, no Start/Stop/End — fully automatic by design: recording begins
     -- when an LCT table is detected, the replay URL lands in chat + Notebook, teams
     -- come from who-drops-models, and the session seals itself server-side after

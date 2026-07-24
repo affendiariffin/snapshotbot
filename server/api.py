@@ -32,7 +32,7 @@ def is_admin():
 # unguessable slugs gate reads, these gate writes, 30-day TTL cleans up the rest.
 _BUCKETS = {}
 _LIMITS = {"start": 5, "snapshot": 90, "notes": 30, "log": 60, "geom": 30, "admin": 20,
-           "roster": 30}
+           "roster": 30, "errorlog": 12}
 
 GEOM_KEY_RE = re.compile(r"^\d{1,25}(-\d{1,25}){0,6}$")
 CARD_KEY_RE = re.compile(r"^[a-z0-9]{1,80}$")
@@ -155,6 +155,35 @@ def client_log():
     slug = str(body.get("slug") or "-")[:32]
     guid = str(body.get("guid") or "-")[:12]
     print(f"[tts:{level}] session={slug} token={guid} {msg}", flush=True)
+    return jsonify({"ok": True})
+
+
+@api.post("/api/errorlog")
+def error_log():
+    # Token black box: posted once, invisibly, when the token is removed from a
+    # table (onDestroy). Carries a rolling trace ring + state summary so a recording
+    # that ended unexpectedly can be diagnosed after the fact. Persisted, not just
+    # printed — Railway's log stream rolls, and this often outlives its session.
+    if _rate_limited("errorlog"):
+        return _bad("rate limited", 429)
+    body = request.get_json(force=True, silent=True) or {}
+    slug = str(body.get("slug") or "-")[:32]
+    guid = str(body.get("guid") or "-")[:24]
+    reason = str(body.get("reason") or "removed")[:40]
+    version = str(body.get("version") or "")[:40]
+    payload = body.get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    # It's a fixed-size ring on the token, but never trust the client: bound it here too.
+    tr = payload.get("trace")
+    if isinstance(tr, list):
+        payload["trace"] = [
+            ({"t": e.get("t"), "m": str(e.get("m") or "")[:300]}
+             if isinstance(e, dict) else str(e)[:300])
+            for e in tr[:60]
+        ]
+    db.add_token_log(slug, guid, reason, version, payload)
+    print(f"[tts:errorlog] session={slug} token={guid} reason={reason} v={version}", flush=True)
     return jsonify({"ok": True})
 
 
