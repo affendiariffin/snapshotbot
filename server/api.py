@@ -216,7 +216,10 @@ def roster_submit():
         unit_data = r.get("data")
         unit_data = str(unit_data)[:60000] if isinstance(unit_data, str) and unit_data else None
         kw = " ".join(str(r.get(k) or "") for k in ("fkw", "kw")).strip()[:400] or None
-        if not db.roster_put(slug, unit_id, model_name, team, descr, unit_data, kw):
+        # unitName is the datasheet name; model nicknames are wargear variants of it.
+        unit_name = str(r.get("un") or "")[:120] or None
+        if not db.roster_put(slug, unit_id, model_name, team, descr, unit_data, kw,
+                             unit_name):
             return _bad("unknown session", 404)
         stored += 1
     if not stored:

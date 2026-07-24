@@ -762,8 +762,14 @@ function pumpRosterQueue()
                         if cut then src = string.sub(src, 1, cut - 1) end
                         if string.find(src, "unitData", 1, true) then
                             row.data = string.sub(src, 1, 60000)
-                            row.kw = string.match(src, 'keywords%s*=%s*"([^"]*)"')
+                            -- unitName is the DATASHEET name ("Celestian Sacresants"); model
+                            -- nicknames are per-model wargear variants ("Celestian Sacresant
+                            -- (Anointed Halberd)"), so deriving a unit label from them gets
+                            -- both the name and the grouping wrong. Take it from the source.
+                            row.un = string.match(src, 'unitName%s*=%s*"([^"]*)"')
                             row.fkw = string.match(src, 'factionKeywords%s*=%s*"([^"]*)"')
+                            -- factionKeywords is matched first, so anchor keywords to line start
+                            row.kw = string.match(src, '\n%s*keywords%s*=%s*"([^"]*)"')
                         end
                     end
                 elseif isLeaderModel(obj) then

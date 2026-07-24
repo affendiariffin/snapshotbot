@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS sb_rosters (
     descr       TEXT NOT NULL DEFAULT '',
     unit_data   TEXT,
     keywords    TEXT,
+    unit_name   TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (session_id, unit_id, model_name)
 );
@@ -119,6 +120,7 @@ def init_db():
                      " resumed BOOLEAN NOT NULL DEFAULT FALSE")
         # sb_rosters shipped before `keywords`; CREATE TABLE IF NOT EXISTS won't backfill it.
         conn.execute("ALTER TABLE sb_rosters ADD COLUMN IF NOT EXISTS keywords TEXT")
+        conn.execute("ALTER TABLE sb_rosters ADD COLUMN IF NOT EXISTS unit_name TEXT")
     expire_old_sessions()
     finalize_stale_sessions()
 
@@ -316,7 +318,8 @@ def get_session_bundle(slug, after_id=0):
             "SELECT cell_key, body FROM sb_notes WHERE session_id = %s", (sess["id"],)
         ).fetchall()
         rosters = conn.execute(
-            "SELECT unit_id, model_name, team, descr, unit_data, keywords FROM sb_rosters"
+            "SELECT unit_id, model_name, team, descr, unit_data, keywords, unit_name"
+            " FROM sb_rosters"
             " WHERE session_id = %s ORDER BY unit_id, model_name",
             (sess["id"],),
         ).fetchall()
@@ -380,21 +383,23 @@ def list_sessions(limit=100):
         return out
 
 
-def roster_put(slug, unit_id, model_name, team, descr, unit_data, keywords=None):
+def roster_put(slug, unit_id, model_name, team, descr, unit_data, keywords=None,
+               unit_name=None):
     with get_conn() as conn:
         sid = _session_id(conn, slug)
         if sid is None:
             return False
         conn.execute(
             "INSERT INTO sb_rosters (session_id, unit_id, model_name, team, descr, unit_data,"
-            " keywords) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+            " keywords, unit_name) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (session_id, unit_id, model_name) DO UPDATE SET"
             "   team = COALESCE(EXCLUDED.team, sb_rosters.team),"
             "   descr = CASE WHEN EXCLUDED.descr <> '' THEN EXCLUDED.descr ELSE sb_rosters.descr END,"
             # only the leader model carries unit_data — never let a squadmate's NULL erase it
             "   unit_data = COALESCE(EXCLUDED.unit_data, sb_rosters.unit_data),"
-            "   keywords = COALESCE(EXCLUDED.keywords, sb_rosters.keywords)",
-            (sid, unit_id, model_name, team, descr, unit_data, keywords),
+            "   keywords = COALESCE(EXCLUDED.keywords, sb_rosters.keywords),"
+            "   unit_name = COALESCE(EXCLUDED.unit_name, sb_rosters.unit_name)",
+            (sid, unit_id, model_name, team, descr, unit_data, keywords, unit_name),
         )
         return True
 
