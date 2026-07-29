@@ -22,8 +22,28 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from server import db, meshgeom  # noqa: E402
 
-FORCEORG = os.path.expanduser(
-    "~/Documents/My Games/Tabletop Simulator/Mods/Workshop/3137407072.json")
+WORKSHOP = os.path.expanduser("~/Documents/My Games/Tabletop Simulator/Mods/Workshop")
+
+
+# ForceOrg's workshop id is not stable: the mod was delisted and re-uploaded on
+# 2026-07-29, moving 3137407072 -> 3753014527 (LCT kept its id through the same
+# outage). Resolve by mod NAME so the next re-upload doesn't break this script;
+# the id below is only the last-resort fallback.
+def _find_forceorg():
+    infos = os.path.join(WORKSHOP, "WorkshopFileInfos.json")
+    try:
+        with open(infos, encoding="utf-8") as f:
+            for e in json.load(f):
+                if (e.get("Name") or "").strip().lower() == "forceorg":
+                    p = e["Directory"].replace("\\", "/")
+                    if os.path.isfile(p):
+                        return p
+    except (OSError, ValueError, KeyError):
+        pass
+    return os.path.join(WORKSHOP, "3753014527.json")
+
+
+FORCEORG = _find_forceorg()
 TTS_CACHE = os.path.expanduser("~/Documents/My Games/Tabletop Simulator/Mods/Models")
 LOCAL_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mesh_cache")
 LONGSTR = re.compile(r"\[\[(.*?)\]\]", re.S)
