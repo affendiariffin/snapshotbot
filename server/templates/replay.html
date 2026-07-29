@@ -76,10 +76,29 @@
   #board.ruler,#board.doodle{cursor:crosshair}
   #tooltip{position:fixed;pointer-events:none;background:#000d;border:1px solid var(--border);
     border-radius:5px;padding:6px 9px;font-size:.8rem;display:none;z-index:50;max-width:340px}
+  /* Full ability rules text, beside the datasheet. Same skin as #tooltip, but capped and
+     scrollable (a datasheet's worth of rules text would otherwise cover the board) — which
+     means it must accept the pointer, unlike the tooltip it rides next to. */
+  #abtip{position:fixed;background:#000d;border:1px solid var(--border);border-radius:5px;
+    padding:0 9px 6px;font-size:.8rem;display:none;z-index:51;width:340px;
+    max-height:min(46vh,520px);overflow-y:auto;overscroll-behavior:contain}
   .tt-head{white-space:nowrap}
   .tt-w{color:#7bc596;font-weight:600}
   .tt-ds{white-space:pre-wrap;font-size:.72rem;line-height:1.34;color:#c9cdd8;
     margin-top:5px;padding-top:5px;border-top:1px solid var(--border)}
+  /* Opaque, unlike the panel it sits in — the scrolling rules text would otherwise read
+     through the header's own translucency. The panel carries NO top padding: the header
+     supplies it, so a `top:0` sticky pins flush to the scrollport with no gap for text to
+     show through above it. */
+  .tt-ab-head{position:sticky;top:0;background:#000;margin:0 -9px;padding:6px 9px 4px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tt-ab{font-size:.72rem;line-height:1.34;color:#c9cdd8;margin-top:5px;padding-top:5px;
+    border-top:1px solid var(--border)}
+  /* Ability names take the same magenta the datasheet's "Abilities" header uses, so the
+     two panels read as one document. */
+  .tt-ab-n{color:#dc61ed;font-weight:600}
+  .tt-ab-d{white-space:pre-wrap;margin-top:1px}
+  .tt-hint{color:var(--muted);font-size:.66rem;font-weight:400}
   .toolbar{display:flex;align-items:center;gap:6px;width:100%;background:var(--panel);
     border:2px solid var(--border);border-top:none;padding:6px 8px;flex-wrap:wrap}
   .btn{background:var(--card);color:var(--text);border:1px solid var(--border);padding:6px 14px;
@@ -204,6 +223,7 @@
 </div>
 <div id="toast"></div>
 <div id="tooltip"></div>
+<div id="abtip"></div>
 
 <div class="page-layout">
 <div class="center-col">
@@ -222,7 +242,7 @@
   <button class="btn" id="dUndo">&#8630;</button>
   <button class="btn" id="dClear">&#10005;</button>
   <div class="tool-sep"></div>
-  <div class="hint" id="hint">hover = datasheet</div>
+  <div class="hint" id="hint">hover = datasheet · abilities panel is scrollable — move onto it</div>
 </div>
 <div class="controls">
   <button class="btn" id="prev">&#8592;</button>
@@ -785,30 +805,31 @@ cv.addEventListener('mousemove', e => {
   if (m){
     const col = m.t === 'red' ? '#e05555' : m.t === 'blue' ? '#5588e0' : '#9aa2b5';
     const ds = m.u && DSHEET[m.u + '|' + m.n];   // the Yellowscribe datasheet, as fielded
-    tip.innerHTML =
+    showTip(m, e,
       '<div class="tt-head"><b style="color:' + col + '">' + esc(m.n || 'model') + '</b>' +
       (m.w ? ' <span class="tt-w">' + esc(m.w) + ' W</span>' : '') + '</div>' +
-      (ds ? '<div class="tt-ds">' + ds + '</div>' : '');
-    placeTip(e);
+      (ds ? '<div class="tt-ds">' + ds + '</div>' : ''),
+      m.u ? ABILHTML[m.u] : null);
   } else {
     const mk = hitMarker(wx, wz);
     if (mk){
       const col = mk.t === 'red' ? '#e05555' : mk.t === 'blue' ? '#5588e0' : '#9aa2b5';
-      tip.innerHTML = '<div class="tt-head"><b style="color:' + col + '">' + esc(markerName(mk)) + '</b>' +
-        (mk.t ? ' <span style="color:#5a6080">· placed by ' + mk.t + '</span>' : '') + '</div>';
-      placeTip(e);
-    } else tip.style.display = 'none';
+      showTip(mk, e,
+        '<div class="tt-head"><b style="color:' + col + '">' + esc(markerName(mk)) + '</b>' +
+        (mk.t ? ' <span style="color:#5a6080">· placed by ' + mk.t + '</span>' : '') + '</div>',
+        null);
+    } else scheduleHideTip();
   }
 });
 cv.addEventListener('mouseup', () => { if (doodling) markDirty(); rulerDown = false; doodling = false; curStroke = null; });
-cv.addEventListener('mouseleave', () => { if (doodling) markDirty(); rulerDown = false; doodling = false; curStroke = null; tip.style.display = 'none'; });
+cv.addEventListener('mouseleave', () => { if (doodling) markDirty(); rulerDown = false; doodling = false; curStroke = null; scheduleHideTip(); });
 
 function setTool(t){
   tool = (tool === t) ? 'pan' : t;
   for (const [id, name] of [['toolRuler', 'ruler'], ['toolDoodle', 'doodle']])
     document.getElementById(id).classList.toggle('active', name === tool);
   cv.className = tool === 'pan' ? '' : tool;
-  const hints = {pan: 'hover = datasheet',
+  const hints = {pan: 'hover = datasheet · abilities panel is scrollable — move onto it',
                  ruler: 'drag between models — snaps to bases, edge-to-edge inches · click Ruler again to exit',
                  doodle: 'draw on the board — strokes stick to this frame · click Doodle again to exit'};
   document.getElementById('hint').textContent = hints[tool];
@@ -845,19 +866,61 @@ function dsHtml(descr){
   push(descr.slice(last));
   return out.trim();
 }
+/* Hover panels: the datasheet tooltip (#tooltip) and, beside it, the full ability rules
+   text (#abtip). The tooltip is pointer-transparent and used to chase the cursor; the
+   abilities panel CANNOT — it is capped at min(46vh,520px) and scrolls, so the pointer has
+   to be able to land on it. Two consequences:
+     · the pair is placed ONCE per hovered target, not on every mousemove — otherwise it
+       runs away from the pointer reaching for it, and re-writing innerHTML each move would
+       reset the panel's scroll position;
+     · hiding is deferred (HIDE_MS) and cancelled by entering the panel, so crossing the
+       pointer-transparent tooltip on the way there doesn't dismiss it. */
+const abtip = document.getElementById('abtip');
+const HIDE_MS = 350;
+let tipTarget = null, hideTimer = null;
+function hideTip(){
+  clearTimeout(hideTimer); hideTimer = null; tipTarget = null;
+  tip.style.display = 'none'; abtip.style.display = 'none';
+}
+function scheduleHideTip(){
+  if (tipTarget === null || hideTimer) return;
+  hideTimer = setTimeout(hideTip, HIDE_MS);
+}
+function showTip(target, e, html, abHtml){
+  clearTimeout(hideTimer); hideTimer = null;
+  if (target === tipTarget){ tip.style.display = 'block'; return; }  // same hover: leave put
+  tipTarget = target;
+  tip.innerHTML = html;
+  abtip.innerHTML = abHtml || '';
+  abtip.scrollTop = 0;
+  placeTip(e);
+}
+abtip.addEventListener('mouseenter', () => { clearTimeout(hideTimer); hideTimer = null; });
+abtip.addEventListener('mouseleave', hideTip);
 // Fixed-position tooltip: keep it fully on-screen — flip left of the cursor near the
 // right edge, lift it up near the bottom (a full datasheet is tall). Measure after the
-// content is set, so offsetWidth/Height are real.
+// content is set, so offsetWidth/Height are real. The abilities panel is then hung off
+// whichever side of the tooltip has room, sharing its top edge.
 function placeTip(e){
   tip.style.display = 'block';
-  const w = tip.offsetWidth, h = tip.offsetHeight, pad = 10, gap = 14;
-  let left = e.clientX + gap;
-  if (left + w > innerWidth - pad) left = e.clientX - gap - w;
+  const hasAb = !!abtip.innerHTML;
+  abtip.style.display = hasAb ? 'block' : 'none';
+  const w = tip.offsetWidth, h = tip.offsetHeight, pad = 10, gap = 14, aw = hasAb ? abtip.offsetWidth + 8 : 0;
+  // Reserve the panel's width on the flip test, so a right-edge hover doesn't put the
+  // tooltip on-screen and the panel off it.
+  let left = e.clientX + gap, flipped = false;
+  if (left + w + aw > innerWidth - pad){ left = e.clientX - gap - w; flipped = true; }
   left = Math.max(pad, Math.min(left, innerWidth - pad - w));
   let top = e.clientY + 8;
   if (top + h > innerHeight - pad) top = e.clientY - 8 - h;
   top = Math.max(pad, Math.min(top, innerHeight - pad - h));
   tip.style.left = left + 'px'; tip.style.top = top + 'px';
+  if (!hasAb) return;
+  let al = flipped ? left - aw : left + w + 8;
+  if (al < pad) al = left + w + 8;                       // no room either side: overlap right
+  al = Math.max(pad, Math.min(al, innerWidth - pad - abtip.offsetWidth));
+  const at = Math.max(pad, Math.min(top, innerHeight - pad - abtip.offsetHeight));
+  abtip.style.left = al + 'px'; abtip.style.top = at + 'px';
 }
 // Actual card faces from the LCT mod (sb_card_images), shown inline — no links
 // to third-party rules sites. Missing image → plain pill via onerror.
@@ -1174,11 +1237,15 @@ function msLoaded(d){
 /* Yellowscribe roster (server-enriched in server/roster.py): unit_id -> unique
    label + keyword set. Callouts name units off THIS, never off a model name —
    a list routinely fields several copies of one datasheet. */
-let ROSTER = {}, DSHEET = {}, rosterRev = 0, rosterSig = null;
-function loadRosters(rows){
+let ROSTER = {}, DSHEET = {}, ABILHTML = {}, rosterRev = 0, rosterSig = null;
+function loadRosters(rows, abilities){
   // Live polls resend the whole roster every 5s; recomputing every event in the game
-  // each time would be pure waste, so bail unless it actually changed.
-  const sig = (rows || []).map(r => r.unit_id + '/' + (r.label || '')).join(',');
+  // each time would be pure waste, so bail unless it actually changed. Abilities land in
+  // the same bundle as the leader row they were parsed from, but count them in the
+  // signature anyway — the roster rows are unchanged by a later re-parse.
+  const ab = abilities || {};
+  const sig = (rows || []).map(r => r.unit_id + '/' + (r.label || '')).join(',')
+            + '#' + Object.keys(ab).length;
   if (sig === rosterSig) return;
   rosterSig = sig;
   const map = {}, ds = {};
@@ -1194,7 +1261,19 @@ function loadRosters(rows){
                   .map(s => s.trim().toLowerCase()).filter(Boolean)),
     };
   }
-  ROSTER = map; DSHEET = ds; rosterRev++; EVENTS = null;
+  // The datasheet tooltip lists abilities by NAME; this is the rules text behind them —
+  // one panel per UNIT (Yellowscribe's own numpad-1 popup, same source table).
+  const ah = {};
+  for (const u of Object.keys(ab)){
+    const list = ab[u] || [];
+    if (!list.length) continue;
+    ah[u] = '<div class="tt-ab-head"><b style="color:#dc61ed">Abilities</b>'
+      + (map[u] && map[u].label ? ' <span class="tt-hint">· ' + esc(map[u].label) + '</span>' : '')
+      + '</div>'
+      + list.map(a => '<div class="tt-ab"><div class="tt-ab-n">' + esc(a.n) + '</div>'
+                    + '<div class="tt-ab-d">' + esc(a.d) + '</div></div>').join('');
+  }
+  ROSTER = map; DSHEET = ds; ABILHTML = ah; rosterRev++; EVENTS = null;
 }
 // Secondaries whose scoring condition is a KEYWORD on the destroyed unit. Only
 // these two gate on the victim's datasheet, so only these two can be checked.
@@ -1683,7 +1762,7 @@ function ingest(sess, first){
   ENDED = sess.ended_at != null;
   // Re-read every poll, not just the first: roster capture finishes seconds AFTER the
   // token starts snapshotting, so a live game's first bundles carry no rosters at all.
-  if (sess.rosters) loadRosters(sess.rosters);
+  if (sess.rosters) loadRosters(sess.rosters, sess.abilities);
   const wasAtEnd = cur >= FRAMES.length - 1;
   for (const s of sess.snapshots){
     if (FLIPPED) flipFrame(s);
