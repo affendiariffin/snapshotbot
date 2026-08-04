@@ -1521,7 +1521,7 @@ function deriveEvents(){
     const byName = {};
     for (const mk of f.markers || []){
       if ((held[mkKey(mk.n, mk.x, mk.z)] || 0) < SETTLE) continue;
-      (byName[mk.n] = byName[mk.n] || []).push([mk.x, mk.z, mk.t, mk.zone]);
+      (byName[mk.n] = byName[mk.n] || []).push([mk.x, mk.z, mk.t, mk.zone, mk.bears_on]);
     }
     for (const [name, cur2] of Object.entries(byName)){
       const key = p => p[0].toFixed(1) + ',' + p[1].toFixed(1);
@@ -1543,7 +1543,12 @@ function deriveEvents(){
         // a bundle the server could not place — no layout resolved, or the flip not yet decided
         // on a live game. An EMPTY zone is a real answer (open ground), so test for null.
         const where = p[3] != null ? p[3] : evPlace(p[0], p[1]);
-        add(i, p[2], where ? `${name} — ${where}` : name);
+        // The server also says which of that side's HELD secondaries this spot bears on
+        // (zones.bears_on, keyed off the card faces). "Bears on", not "scores" — Beacon,
+        // Outflank and Plunder all score for being OUTSIDE the zone they name.
+        const on = (p[4] || []).map(c => c.charAt(0).toUpperCase() + c.slice(1));
+        const tail = on.length ? ` · bears on ${on.join(', ')}` : '';
+        add(i, p[2], (where ? `${name} — ${where}` : name) + tail);
       }
     }
     prevPos = byName;

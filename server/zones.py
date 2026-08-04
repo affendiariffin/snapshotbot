@@ -441,6 +441,7 @@ def place(x, z, lay, side=None, rnd=None, radius=0.0):
     # standing, so it is not a fixed zone and is not modelled here.
     edge = min(BOARD_HX - abs(x), BOARD_HZ - abs(z))
     if edge + radius <= INGRESS_IN:
+        out["edge_band"] = True          # Outflank only needs the band; ingress needs it LEGAL
         in_foe_dz = bool(out.get("dz")) and side and out["dz"]["side"] != side
         out["ingress"] = not (rnd is not None and rnd < 3 and in_foe_dz)
 
@@ -490,6 +491,89 @@ def tag_marker_zones(bundle):
         for mk in snap.get("markers") or []:
             if mk.get("x") is None:
                 continue
-            mk["zone"] = describe(place(flip * mk["x"], flip * mk["z"], lay,
-                                        side=mk.get("t"), rnd=rnd))
+            pl = place(flip * mk["x"], flip * mk["z"], lay, side=mk.get("t"), rnd=rnd)
+            mk["zone"] = describe(pl)
+            held = (snap.get("cards") or {}).get((mk.get("t") or "") + "_secondary") or []
+            rel = bears_on(pl, mk.get("t"), held)
+            if rel:
+                mk["bears_on"] = rel
     return bundle
+
+
+# --- Mission context ------------------------------------------------------------------
+# Which of a side's HELD secondaries a position bears on. Zone tokens per card are transcribed
+# from the official card faces (the renders sb_card_images already holds, harvested by
+# local/gdm_secondaries.py) into mission_scoring.json, which is contract-governed -- run
+# framework/contracts/validate.py after editing it.
+#
+# "Bears on", never "scores". Three of these cards score for being OUTSIDE the zone they name:
+#   Beacon    3VP if the beacon unit is NOT within your DZ, 5VP if NOT within your territory
+#   Outflank  within 6" of a battlefield edge and NOT within your territory
+#   Plunder   a unit within a terrain area NOT within your territory
+# so a token marks relevance and the reader draws the conclusion. Scoring also depends on unit
+# keywords (AIRCRAFT and battle-shocked are excluded throughout), on control, and on actions
+# having been started -- none of which a position alone can settle.
+_mission_scoring = None
+
+
+def mission_scoring():
+    global _mission_scoring
+    if _mission_scoring is None:
+        path = os.path.join(os.path.dirname(__file__), "static", "mission_scoring.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                _mission_scoring = json.load(f)
+        except (OSError, ValueError):
+            _mission_scoring = {}
+    return _mission_scoring
+
+
+def _card_key(name):
+    return re.sub(r"^\d+[.)]\s*", "", str(name or "")).strip().lower()
+
+
+def zone_tokens(p, side=None):
+    """place() result -> the zone tokens mission_scoring.json keys its `zones` lists on."""
+    out = set()
+    o = p.get("objective")
+    if o:
+        out.add("objective")
+        kind, label = o.get("kind"), (o.get("label") or "").lower()
+        if kind == "expansion":
+            out.add("objective:expansion")
+        elif kind == "home" and side:
+            owner = "red" if label.startswith("red") else "blue" if label.startswith("blue") else None
+            if owner:
+                out.add("objective:home:own" if owner == side else "objective:home:enemy")
+    if p.get("dz") and side:
+        out.add("dz:own" if p["dz"]["side"] == side else "dz:enemy")
+    if p.get("territory") and side:
+        out.add("territory:own" if p["territory"] == side else "territory:enemy")
+    if p.get("terrain_area"):
+        out.add("terrain")
+    if p.get("quarter"):
+        out.add("quarter")
+    if p.get("centre_ground"):
+        out.add("centre")
+    if p.get("edge_band"):
+        out.add("edge")
+    if p.get("no_mans_land"):
+        out.add("nml")
+    return out
+
+
+def bears_on(p, side, held):
+    """Names of `held` secondaries whose card condition turns on a zone this position touches.
+    `held` is that side's secondary cards at this frame -- a card not in hand is not relevant,
+    the same gate killTag() uses."""
+    secs = (mission_scoring() or {}).get("secondaries") or {}
+    toks = zone_tokens(p, side)
+    if not toks:
+        return []
+    hits = []
+    for raw in held or []:
+        k = _card_key(raw)
+        z = (secs.get(k) or {}).get("zones")
+        if z and toks.intersection(z):
+            hits.append(k)
+    return sorted(set(hits))
