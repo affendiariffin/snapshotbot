@@ -1521,7 +1521,7 @@ function deriveEvents(){
     const byName = {};
     for (const mk of f.markers || []){
       if ((held[mkKey(mk.n, mk.x, mk.z)] || 0) < SETTLE) continue;
-      (byName[mk.n] = byName[mk.n] || []).push([mk.x, mk.z, mk.t]);
+      (byName[mk.n] = byName[mk.n] || []).push([mk.x, mk.z, mk.t, mk.zone]);
     }
     for (const [name, cur2] of Object.entries(byName)){
       const key = p => p[0].toFixed(1) + ',' + p[1].toFixed(1);
@@ -1537,7 +1537,14 @@ function deriveEvents(){
         });
         appeared.splice(bi, 1);
       }
-      for (const p of appeared) add(i, p[2], `${name} — ${evPlace(p[0], p[1])}`);
+      for (const p of appeared){
+        // The SERVER names the zone (zones.place/describe), so the viewer, the analyze-game
+        // cruncher and the offline download all read one label. evPlace is only the fallback for
+        // a bundle the server could not place — no layout resolved, or the flip not yet decided
+        // on a live game. An EMPTY zone is a real answer (open ground), so test for null.
+        const where = p[3] != null ? p[3] : evPlace(p[0], p[1]);
+        add(i, p[2], where ? `${name} — ${where}` : name);
+      }
     }
     prevPos = byName;
   });
@@ -1654,10 +1661,18 @@ function renderCallouts(){
     // persist: show this side's most recent event at or before the current
     // frame — it stays until the next event on that side replaces it (pure
     // function of cur, so scrubbing either direction behaves).
+    // Events this close together are one moment, not a sequence: two terrain areas marked in the
+    // same breath landed 5 frames apart and the later one silently replaced the earlier, so only
+    // one was ever readable (Fendi, 2026-08-04). Merge them instead; the leader points at the
+    // most recent.
+    const MERGE = 6;                  // frames — ~30s at the 5s poll
     let msgs = [], atI = -1;
     for (let k = cur; k >= 0; k--){
       const e2 = all[k];
-      if (e2 && e2[side].length){ msgs = e2[side]; atI = k; break; }
+      if (!e2 || !e2[side].length) continue;
+      if (atI < 0){ atI = k; msgs = e2[side].slice(); }
+      else if (atI - k < MERGE) msgs = e2[side].concat(msgs);
+      else break;
     }
     if (!msgs.length) continue;
     const truePct = (Date.parse(FRAMES[atI].taken_at) - t0) / span * 100;

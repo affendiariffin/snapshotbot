@@ -160,6 +160,28 @@ def _in_poly(x, z, poly):
     return inside
 
 
+def flip_sign(bundle, lay, early=None):
+    """+1, or -1 when the players sat the other way round from the side the layout SVG bakes in.
+    The viewer decides this the same way in maybeFlip(); anything server-side that compares a
+    recorded position against layout geometry has to apply it too, or every zone comes out
+    mirrored. None = not enough claimed models to call it yet."""
+    rz = (lay or {}).get("red_zone")
+    if not rz:
+        return None
+    if early is None:
+        early = [s for s in bundle.get("snapshots") or [] if (s.get("round") or 0) < 2]
+    dot = votes = 0
+    for s in early:
+        for m in s.get("models") or []:
+            if not m.get("t") or m.get("v"):
+                continue
+            dot += (m["x"] * rz[0] + m["z"] * rz[1]) * (1 if m["t"] == "red" else -1)
+            votes += 1
+    if votes == 0:
+        return None
+    return -1 if dot < 0 else 1
+
+
 def backfill_teams(bundle, early=None):
     # Fallback for tokens spawned post-deployment: a unit standing inside a
     # deployment zone during round 0 belongs to that zone's player. Only fires
@@ -172,17 +194,9 @@ def backfill_teams(bundle, early=None):
         return bundle
     if early is None:
         early = [s for s in bundle["snapshots"] if (s.get("round") or 0) < 2]
-    rz = lay["red_zone"]
-    dot = votes = 0
-    for s in early:
-        for m in s.get("models") or []:
-            if not m.get("t") or m.get("v"):
-                continue
-            dot += (m["x"] * rz[0] + m["z"] * rz[1]) * (1 if m["t"] == "red" else -1)
-            votes += 1
-    if votes == 0:
+    flip = flip_sign(bundle, lay, early)
+    if flip is None:
         return bundle
-    flip = -1 if dot < 0 else 1
     # Unclaimed round-0 positions, keyed by yellowscribe unit — or, for models
     # without one, by name (no stable per-model id exists across frames; a name
     # claims a team only when ALL its round-0 holders sit in the same zone).
@@ -272,4 +286,210 @@ def tag_reserve_zones(bundle):
             z = reserve_zone(m.get("rx"), m.get("rz"), m.get("t"))
             if z:
                 m["zone"] = z
+    return bundle
+
+
+# --- Zone resolution -------------------------------------------------------------------
+# One place that names WHERE something is, so the viewer, the analyze-game cruncher and the
+# offline download all read the same label (same reasoning as tag_reserve_zones). Replaces the
+# viewer's client-side evPlace.
+#
+# Everything measures to an AREA, never to a point: in 11e an objective IS the terrain piece, it
+# has no centre, and some are triangles or carry protruding snubs a model can legally stand on
+# (Fendi, 2026-08-04). The one exception is Centre Ground, whose card really does measure to the
+# centre of the battlefield.
+#
+# Predicates are the 40k measurement vocabulary and nothing finer -- "wholly within", "within",
+# "near". `radius` is the model's base radius, or its hull half-extent for a FRAME model, which
+# per Core Rules 17.02 is measured "to and from the closest point on that model (so not
+# necessarily from its base, if it has one)" -- so FRAME is decided by the KEYWORD, never by
+# whether a base disc happened to be measured. Markers pass radius=0.
+BOARD_HX, BOARD_HZ = 30.0, 22.0     # 60x44 battlefield, confirmed by LCT's own zoneScale
+NEAR_IN = 3.0                       # the usual 40k slack for "near"
+CENTRE_GROUND_IN = 3.0              # Centre Ground: friendly presence radius (BOTH tiers)
+CENTRE_GROUND_FAR_IN = 6.0          # ... and the 5VP enemy-exclusion radius
+INGRESS_IN = 6.0                    # Ingress Move 20.04 set-up distance
+QUARTER_EXCL_IN = 6.0               # table quarters ignore the middle (Engage on All Fronts)
+AMBIG_IN = 1.0                      # two objectives this close in distance = "between", not "near X"
+
+
+def _edge_dist(poly, x, z):
+    """Distance from a point to a polygon BOUNDARY, whether the point is inside or outside."""
+    best = float("inf")
+    for i in range(len(poly)):
+        x1, z1 = poly[i - 1]
+        x2, z2 = poly[i]
+        dx, dz = x2 - x1, z2 - z1
+        den = dx * dx + dz * dz
+        t = 0.0 if den == 0 else max(0.0, min(1.0, ((x - x1) * dx + (z - z1) * dz) / den))
+        best = min(best, ((x - (x1 + t * dx)) ** 2 + (z - (z1 + t * dz)) ** 2) ** 0.5)
+    return best
+
+
+def relate(poly, x, z, radius=0.0, near=NEAR_IN):
+    """Where a footprint of `radius` sits relative to an area. None = not in contact."""
+    if not poly:
+        return None
+    edge = _edge_dist(poly, x, z)
+    if _in_poly(x, z, poly):
+        return "wholly within" if edge >= radius else "within"
+    if edge <= radius:
+        return "within"
+    return "near" if edge <= near else None
+
+
+def _territory(lay, x, z):
+    """Which half the point sits in, split by the SVG's territory line. That line is often
+    DIAGONAL, so this is deliberately not a board-axis test."""
+    ln = lay.get("territory_line")
+    rz = lay.get("red_zone")
+    if not ln or not rz:
+        return None
+    (x1, z1), (x2, z2) = ln
+    cross = (x2 - x1) * (z - z1) - (z2 - z1) * (x - x1)
+    ref = (x2 - x1) * (rz[1] - z1) - (z2 - z1) * (rz[0] - x1)
+    if cross == 0 or ref == 0:
+        return None
+    return "red" if (cross > 0) == (ref > 0) else "blue"
+
+
+def _quarter(lay, x, z):
+    """Table quarter, named by the home/expansion objective standing in it. Board centre lines,
+    minus a 6in middle exclusion (Fendi: the Engage on All Fronts / Recon-vs-Take-and-Hold shape)."""
+    if (x * x + z * z) ** 0.5 <= QUARTER_EXCL_IN:
+        return None
+    best, bd = None, float("inf")
+    for o in lay.get("objectives") or []:
+        if o.get("kind") not in ("home", "expansion"):
+            continue
+        if (o["x"] > 0) != (x > 0) or (o["z"] > 0) != (z > 0):
+            continue
+        d = _edge_dist(o["poly"], x, z) if o.get("poly") else 1e9
+        if d < bd:
+            bd, best = d, o
+    return ("the table quarter near " + best["label"]) if best else None
+
+
+def place(x, z, lay, side=None, rnd=None, radius=0.0):
+    """Every zone a point touches, most specific first. `side` is whose model/marker it is (for
+    friendly-vs-enemy centre ground), `rnd` the battle round (for ingress eligibility)."""
+    if not lay:
+        return {}
+    out = {}
+
+    ranked = []
+    for o in lay.get("objectives") or []:
+        how = relate(o.get("poly"), x, z, radius)
+        if how:
+            tier = ("wholly within", "within", "near").index(how)
+            ranked.append((tier, _edge_dist(o["poly"], x, z), o, how))
+    ranked.sort(key=lambda r: (r[0], r[1]))          # closest wins, never list order
+    if ranked:
+        tier, dist, o, how = ranked[0]
+        # "near X" claims proximity to X IN PARTICULAR. Between two objectives that claim is
+        # false whichever one you name -- and that is exactly where the board centre sits on the
+        # 15 two-central layouts, where the middle is no-man's-land rather than an objective
+        # (Fendi, 2026-08-04). Measured there, the two centrals are 0.01-0.36in apart in distance,
+        # so picking by list order silently named the wrong one. Claim neither instead.
+        tied = (how == "near" and len(ranked) > 1 and ranked[1][0] == tier
+                and ranked[1][1] - dist <= AMBIG_IN)
+        if tied:
+            out["between"] = [o.get("label"), ranked[1][2].get("label")]
+        else:
+            out["objective"] = {"label": o.get("label"), "kind": o.get("kind"), "how": how}
+
+    for a in lay.get("terrain_areas") or []:
+        hit = None
+        for p in a["polys"]:
+            how = relate(p, x, z, radius)
+            if how and (hit is None or how != "near"):
+                hit = how
+        if hit:
+            out.setdefault("terrain_area", {"id": a["id"], "how": hit})
+
+    for who, key in (("red", "red_poly"), ("blue", "blue_poly")):
+        how = relate(lay.get(key), x, z, radius)
+        if how and how != "near":
+            out["dz"] = {"side": who, "how": how}
+
+    terr = _territory(lay, x, z)
+    if terr:
+        out["territory"] = terr
+    # No-man's-land is not drawn in the layout -- the SVG colour-codes only the two deployment
+    # zones (red rgba(255,74,74,.1) / blue rgba(74,158,255,.1)) and the territory split is the
+    # dashed line. So NML is the complement: on the board, in neither DZ. Fendi's taxonomy has
+    # territory = own DZ + own no-man's-land, so the two together name the half precisely.
+    if not out.get("dz") and abs(x) <= BOARD_HX and abs(z) <= BOARD_HZ:
+        out["no_mans_land"] = True
+    q = _quarter(lay, x, z)
+    if q:
+        out["quarter"] = q
+
+    # Centre Ground measures to the CENTRE of the battlefield, not to an area -- the one point
+    # measurement in this file. 3in is the friendly presence radius for BOTH tiers, 6in is the
+    # 5VP enemy-exclusion radius (card read 2026-08-04; the shorthand "friendly 3, enemy 6" has
+    # the friendly radius wrong for the 3VP tier).
+    dc = max(0.0, (x * x + z * z) ** 0.5 - radius)
+    if dc <= CENTRE_GROUND_IN:
+        out["centre_ground"] = "inner"
+    elif dc <= CENTRE_GROUND_FAR_IN:
+        out["centre_ground"] = "outer"
+
+    # Ingress Move 20.04: set up WHOLLY WITHIN 6in of one or more battlefield edges, and before
+    # the third battle round no model may be within the OPPONENT's deployment zone. The other
+    # half of the rule (">8in horizontally from all enemy units") depends on where the enemy is
+    # standing, so it is not a fixed zone and is not modelled here.
+    edge = min(BOARD_HX - abs(x), BOARD_HZ - abs(z))
+    if edge + radius <= INGRESS_IN:
+        in_foe_dz = bool(out.get("dz")) and side and out["dz"]["side"] != side
+        out["ingress"] = not (rnd is not None and rnd < 3 and in_foe_dz)
+
+    return out
+
+
+def describe(p):
+    """Render place() the way the callouts read: most specific first, container last."""
+    if not p:
+        return ""
+    parts = []
+    o = p.get("objective")
+    if o:
+        parts.append(("near " if o["how"] == "near" else "on ") + o["label"])
+    elif p.get("between"):
+        parts.append("between %s and %s" % tuple(p["between"]))
+    if p.get("dz"):
+        parts.append("in %s's DZ" % p["dz"]["side"])
+    elif p.get("ingress"):
+        parts.append("in the Strategic Reserves ingress zone")
+    if p.get("terrain_area"):
+        parts.append(("near" if p["terrain_area"]["how"] == "near" else "in") + " a terrain area")
+    if p.get("centre_ground") == "inner":
+        parts.append("on the centre ground")
+    if not parts:
+        if p.get("quarter"):
+            parts.append(p["quarter"])
+        elif p.get("no_mans_land") and p.get("territory"):
+            parts.append("in %s's no-man's-land" % p["territory"])
+        elif p.get("territory"):
+            parts.append("%s territory" % p["territory"])
+    return ", ".join(parts)
+
+
+def tag_marker_zones(bundle):
+    """Attach `zone` to every marker so the viewer stops computing placement client-side."""
+    lay = layouts_meta().get(layout_key_from_bundle(bundle) or "")
+    if not lay:
+        return bundle
+    # Recorded positions are in table space; the layout is in SVG space. Without this the zones
+    # come out mirrored on every game where the players sat the other way round.
+    flip = flip_sign(bundle, lay)
+    if flip is None:
+        return bundle
+    for snap in bundle.get("snapshots") or []:
+        rnd = snap.get("round") or 0
+        for mk in snap.get("markers") or []:
+            if mk.get("x") is None:
+                continue
+            mk["zone"] = describe(place(flip * mk["x"], flip * mk["z"], lay,
+                                        side=mk.get("t"), rnd=rnd))
     return bundle
