@@ -502,19 +502,19 @@ def tag_marker_zones(bundle):
             pl = place(flip * mk["x"], flip * mk["z"], lay, side=mk.get("t"), rnd=rnd)
             mk["zone"] = describe(pl)
             held = (snap.get("cards") or {}).get((mk.get("t") or "") + "_secondary") or []
-            rel = bears_on(pl, mk.get("t"), held)
+            rel = relevant_secondaries(pl, mk.get("t"), held)
             if rel:
-                mk["bears_on"] = rel
+                mk["relevant_to"] = rel
     return bundle
 
 
 # --- Mission context ------------------------------------------------------------------
-# Which of a side's HELD secondaries a position bears on. Zone tokens per card are transcribed
+# Which of a side's HELD secondaries a position is RELEVANT TO. Zone tokens per card are transcribed
 # from the official card faces (the renders sb_card_images already holds, harvested by
 # local/gdm_secondaries.py) into mission_scoring.json, which is contract-governed -- run
 # framework/contracts/validate.py after editing it.
 #
-# "Bears on", never "scores". Three of these cards score for being OUTSIDE the zone they name:
+# "Relevant to", never "scores". Three of these cards score for being OUTSIDE the zone they name:
 #   Beacon    3VP if the beacon unit is NOT within your DZ, 5VP if NOT within your territory
 #   Outflank  within 6" of a battlefield edge and NOT within your territory
 #   Plunder   a unit within a terrain area NOT within your territory
@@ -570,10 +570,11 @@ def zone_tokens(p, side=None):
     return out
 
 
-def bears_on(p, side, held):
-    """Names of `held` secondaries whose card condition turns on a zone this position touches.
-    `held` is that side's secondary cards at this frame -- a card not in hand is not relevant,
-    the same gate killTag() uses."""
+def relevant_secondaries(p, side, held):
+    """Names of `held` secondaries whose card condition turns on a zone this position touches --
+    i.e. the cards that CARE about where this is, which is a narrower claim than scoring. `held`
+    is that side's secondary cards at this frame; a card not in hand is not relevant, the same
+    gate killTag() uses."""
     secs = (mission_scoring() or {}).get("secondaries") or {}
     toks = zone_tokens(p, side)
     if not toks:

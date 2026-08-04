@@ -1473,7 +1473,7 @@ function deriveEvents(){
     const byName = {};
     for (const mk of f.markers || []){
       if ((held[mkKey(mk.n, mk.x, mk.z)] || 0) < SETTLE) continue;
-      (byName[mk.n] = byName[mk.n] || []).push([mk.x, mk.z, mk.t, mk.zone, mk.bears_on]);
+      (byName[mk.n] = byName[mk.n] || []).push([mk.x, mk.z, mk.t, mk.zone, mk.relevant_to]);
     }
     for (const [name, cur2] of Object.entries(byName)){
       const key = p => p[0].toFixed(1) + ',' + p[1].toFixed(1);
@@ -1495,11 +1495,12 @@ function deriveEvents(){
         // (open ground); a MISSING one means the server could not place the bundle at all (no
         // layout resolved, or the flip undecided), and the marker is then reported by name.
         const where = p[3];        // server-tagged; absent only if it could not place at all
-        // The server also says which of that side's HELD secondaries this spot bears on
-        // (zones.bears_on, keyed off the card faces). "Bears on", not "scores" — Beacon,
-        // Outflank and Plunder all score for being OUTSIDE the zone they name.
+        // The server also names which of that side's HELD secondaries this spot is relevant to
+        // (zones.relevant_secondaries, keyed off the card faces). "Relevant to", never "scores" —
+        // Beacon, Outflank and Plunder all score for being OUTSIDE the zone they name, and
+        // scoring further needs control, keywords and started actions that a position cannot settle.
         const on = (p[4] || []).map(c => c.charAt(0).toUpperCase() + c.slice(1));
-        const tail = on.length ? ` · bears on ${on.join(', ')}` : '';
+        const tail = on.length ? ` · relevant to ${on.join(', ')}` : '';
         add(i, p[2], (where ? `${name} — ${where}` : name) + tail);
       }
     }
