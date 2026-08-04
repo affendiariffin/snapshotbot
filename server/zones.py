@@ -238,12 +238,21 @@ def backfill_teams(bundle, early=None):
 # direction, so rz runs top -> bottom.
 #   rz: 0 = DEEP STRIKE edge -> 1 = far TRANSPORTS edge, four equal rows
 #   rx: slot 1 sits at HIGH rx, i.e. MIRRORED vs the printed 1..4 numbering
+#
+# Both bands above are calibrated on RED. Each board faces its own player, so blue's is
+# red's turned 180 deg -- and the token normalises rx/rz against the board's WORLD-axis
+# bounding box, which cannot see that rotation. Blue therefore arrives mirrored on both
+# axes and must be un-rotated here (Fendi, 2026-08-04: JulxL-gk showed blue's transported
+# units sitting in the DEEP STRIKE + STRATEGIC RESERVES rows, i.e. rows 3 and 2 read
+# upside down). Doing it server-side keeps one calibration and fixes past recordings.
 RESERVE_ROWS = ("DEEP STRIKE", "STRATEGIC RESERVES", "TRANSPORT", "TRANSPORT")
 
 
-def reserve_zone(rx, rz):
+def reserve_zone(rx, rz, side=None):
     if rx is None or rz is None:
         return None
+    if side == "blue":
+        rx, rz = 1 - rx, 1 - rz
     row = min(3, max(0, int(rz * 4)))
     if row < 2:
         return RESERVE_ROWS[row]
@@ -260,7 +269,7 @@ def tag_reserve_zones(bundle):
     """
     for snap in bundle.get("snapshots") or []:
         for m in snap.get("models") or []:
-            z = reserve_zone(m.get("rx"), m.get("rz"))
+            z = reserve_zone(m.get("rx"), m.get("rz"), m.get("t"))
             if z:
                 m["zone"] = z
     return bundle

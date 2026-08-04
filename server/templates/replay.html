@@ -130,19 +130,19 @@
      position. Bubbles linger 5 frames unless a newer one replaces them. */
   .strip-wrap{position:relative;flex:1;min-width:200px;height:16px}
   .ts-callouts{position:absolute;left:0;right:0;height:72px;z-index:30;pointer-events:none}
-  #calloutRed{bottom:100%;margin-bottom:8px}
-  #calloutBlue{top:100%;margin-top:8px}
+  #calloutRed{bottom:100%;margin-bottom:27px}
+  #calloutBlue{top:100%;margin-top:27px}
   .ts-callout{position:absolute;transform:translateX(-50%);max-width:88%;z-index:1;
     font-size:.85rem;line-height:1.35;background:#000e;border:1px solid var(--border);
     border-radius:5px;padding:3px 10px;overflow:hidden;pointer-events:auto;
     display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
-  #calloutRed .ts-callout{top:0}
-  #calloutBlue .ts-callout{bottom:0}
+  #calloutRed .ts-callout{bottom:0}
+  #calloutBlue .ts-callout{top:0}
   .ts-callout.red{border-left:3px solid var(--red)}
   .ts-callout.blue{border-left:3px solid var(--blue)}
   .ts-leader{position:absolute;width:2px;transform:translateX(-50%);opacity:.55;z-index:0}
-  #calloutRed .ts-leader{top:0;bottom:-8px}
-  #calloutBlue .ts-leader{top:-8px;bottom:0}
+  #calloutRed .ts-leader{top:100%;height:27px}
+  #calloutBlue .ts-leader{bottom:100%;height:27px}
   .ts-leader.red{background:var(--red)}
   .ts-leader.blue{background:var(--blue)}
   .time-strip{position:relative;width:100%;height:16px;background:var(--card);
@@ -1349,7 +1349,13 @@ function deriveEvents(){
   if (EVENTS && evFrameCount === FRAMES.length && evRosterRev === rosterRev) return EVENTS;
   evFrameCount = FRAMES.length; evRosterRev = rosterRev;
   const ev = FRAMES.map(() => null);
+  // Nothing before the first battle round is commentary. Deployment is models being placed,
+  // picked up and shuffled, which reads as removals and multi-model casualties — the two
+  // sources with no round test of their own (Fendi, 2026-08-04). Gated at the single funnel
+  // so every source, present and future, inherits it; -1 = not started, so nothing scores.
+  const START = FRAMES.findIndex(f => (f.round || 0) >= 1);   // round 0 = deployment
   const add = (i, side, text) => {
+    if (START < 0 || i < START) return;
     (ev[i] = ev[i] || {red: [], blue: []})[side === 'blue' ? 'blue' : 'red'].push(text);
   };
   // turn windows
