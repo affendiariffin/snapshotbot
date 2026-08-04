@@ -1492,12 +1492,37 @@ function deriveEvents(){
       add(g.i, g.side, txt);
     }
   }
-  // markers: genuine NEW drops only — a vanished same-name position nearby = a move
+  // markers: genuine NEW drops only — a vanished same-name position nearby = a move.
+  //
+  // Markers are placed BY HAND, and the poll catches them mid-placement as if they were down.
+  // JulxL-gk caught blue's Marked Terrain at (16.1, 11.6) for ONE frame — 24" from where it
+  // settled — and reported "near blue's home objective, in blue's DZ" for a token that ended up on
+  // blue's EXPANSION objective. Worse, the settle was then swallowed by the move-matching below (a
+  // vanish pairs with a nearby appearance and consumes it), so the real position never fired at
+  // all. So a position only counts once the marker HOLDS it: transients never reach the diff, and
+  // the settle reads as a fresh appearance (Fendi, 2026-08-04).
+  //
+  // EXACT positions, not a tolerance cluster. Measured, markers do not drift — 98.9% of
+  // consecutive sightings are byte-identical, 3 nudges under 0.5" all game. Clustering was tried
+  // and is strictly worse: a cluster takes the position of its FIRST sighting, which is the
+  // in-transit one, and greedy chaining merges 0.45"-apart transients into a cluster that then
+  // passes the threshold and fires the very callout this suppresses. A marker that IS nudged holds
+  // both positions long enough to pass, and the move-matching pairs them, so nothing escapes.
+  const mkKey = (n, x, z) => n + '@' + x.toFixed(1) + ',' + z.toFixed(1);
+  const held = {};
+  for (const f of FRAMES)
+    for (const mk of f.markers || []){
+      const k = mkKey(mk.n, mk.x, mk.z);
+      held[k] = (held[k] || 0) + 1;
+    }
+  const SETTLE = 3;   // frames — in-transit positions ran 1-2, real placements 35+
   let prevPos = {};
   FRAMES.forEach((f, i) => {
     const byName = {};
-    for (const mk of f.markers || [])
+    for (const mk of f.markers || []){
+      if ((held[mkKey(mk.n, mk.x, mk.z)] || 0) < SETTLE) continue;
       (byName[mk.n] = byName[mk.n] || []).push([mk.x, mk.z, mk.t]);
+    }
     for (const [name, cur2] of Object.entries(byName)){
       const key = p => p[0].toFixed(1) + ',' + p[1].toFixed(1);
       const old = prevPos[name] || [];
