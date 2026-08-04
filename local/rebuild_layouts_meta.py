@@ -48,6 +48,10 @@ from server.zones import CODE_ORDER      # noqa: E402
 LAYDIR = os.path.join(ROOT, "server", "static", "layouts")
 META = os.path.join(LAYDIR, "layouts_meta.json")
 RIJSON = os.path.join(ROOT, "docs", "reference", "rapidingress", "ri_layouts_11e.json")
+# Layouts a balance dataslate revised while rapidingress still serves the pre-dataslate geometry.
+# Read at BUILD time from the suite's registry so there is no cross-repo dependency at runtime --
+# the flag travels inside layouts_meta.json with the data it describes.
+STALE = os.path.join(ROOT, "..", "fnd-discord-suite", "fnd", "data", "stale_layouts.json")
 PPI = 20.0
 SIMP_TOL = 0.12          # inches the simplified objective outline may deviate from the raw footprint
 
@@ -154,9 +158,31 @@ def territory_line(key):
     return [list(svg_pt(x1, y1)), list(svg_pt(x2, y2))]
 
 
+def stale_keys():
+    """{layout key: dataslate date} for layouts the current rapidingress archive predates."""
+    try:
+        with open(STALE, encoding="utf-8") as f:
+            reg = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    disp = {"Take and Hold": "TH", "Purge the Foe": "PF", "Disruption": "DI",
+            "Reconnaissance": "RE", "Priority Assets": "PA"}
+    when = reg.get("dataslate")
+    out = {}
+    for row in reg.get("stale") or []:
+        codes = sorted((disp.get(row.get("disp_a")), disp.get(row.get("disp_b"))),
+                       key=lambda c: CODE_ORDER.index(c) if c in CODE_ORDER else 9)
+        if not all(codes):
+            continue
+        for letter in row.get("layouts") or []:
+            out["%s-%s-%s" % (codes[0], codes[1], letter)] = when
+    return out
+
+
 def main():
     with open(META, encoding="utf-8") as f:
         meta = json.load(f)
+    stale = stale_keys()
     with open(RIJSON, encoding="utf-8") as f:
         ri = {}
         for x in json.load(f):
@@ -165,7 +191,8 @@ def main():
 
     stats = {"layouts": 0, "objs": 0, "filled": 0, "replaced": 0, "worst_match": 0.0,
              "verts_before": 0, "verts_after": 0, "lines": 0, "contained": 0, "max_dev": 0.0,
-             "ter_before": 0, "ter_after": 0, "areas": 0, "ter_layouts": 0, "problems": []}
+             "ter_before": 0, "ter_after": 0, "areas": 0, "ter_layouts": 0, "stale": 0,
+             "problems": []}
 
     for key, lay in sorted(meta.items()):
         src = ri.get(key)
@@ -257,6 +284,12 @@ def main():
         else:
             stats["problems"].append("%s: no terrain footprints in rapidingress" % key)
 
+        if key in stale:
+            lay["stale_dataslate"] = stale[key]
+            stats["stale"] += 1
+        else:
+            lay.pop("stale_dataslate", None)
+
         line = territory_line(key)
         if line:
             lay["territory_line"] = line
@@ -276,6 +309,8 @@ def main():
     print("terrain footprints   : %d -> %d  in %d areas" % (
           stats["ter_before"], stats["ter_after"], stats["areas"]))
     print("territory lines      : %d" % stats["lines"])
+    print("flagged pre-dataslate: %d  (rapidingress still predates the dataslate)"
+          % stats["stale"])
     print("worst marker->area   : %.2f in" % stats["worst_match"])
     print("max outline deviation: %.3f in  (tol %.2f)   <-- shape gate"
           % (stats["max_dev"], SIMP_TOL))

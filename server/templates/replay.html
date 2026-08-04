@@ -1296,58 +1296,10 @@ function zoneWord(z){
 if (EMBEDDED) msLoaded(EMBEDDED.mission_scoring);
 else fetch('/static/mission_scoring.json').then(r => r.json()).then(msLoaded).catch(() => msLoaded(null));
 function cleanCard(n){ return String(n || '').replace(/^\d+[.)]\s*/, '').trim(); }
-function evInPoly(poly, x, z){
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
-    const [xi, zi] = poly[i], [xj, zj] = poly[j];
-    if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi)
-      inside = !inside;
-  }
-  return inside;
-}
-function evPolyDist(poly, x, z){
-  if (evInPoly(poly, x, z)) return 0;
-  let best = 1e9;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
-    const [x1, z1] = poly[j], [x2, z2] = poly[i];
-    const dx = x2 - x1, dz = z2 - z1;
-    const t = Math.max(0, Math.min(1, ((x - x1) * dx + (z - z1) * dz) / (dx * dx + dz * dz || 1)));
-    best = Math.min(best, Math.hypot(x - (x1 + t * dx), z - (z1 + t * dz)));
-  }
-  return best;
-}
-// Objectives are terrain AREAS in 11e — no centre to measure to. Describe
-// WHERE a marker dropped in mission terms instead: DZ, edge ingress zone,
-// the official layout's GENERAL terrain areas (LCT tables approximate them —
-// 3" tolerance as "near"), near an objective, territory.
-function evPlace(x, z){
-  const parts = [];
-  if (LAYOUT_META.red_poly && evInPoly(LAYOUT_META.red_poly, x, z)) parts.push("in red's DZ");
-  else if (LAYOUT_META.blue_poly && evInPoly(LAYOUT_META.blue_poly, x, z)) parts.push("in blue's DZ");
-  else if (Math.abs(x) > 24 || Math.abs(z) > 16) parts.push('in an edge ingress zone');
-  // Objectives carry a baked LABEL (e.g. "blue's expansion objective"). A marker
-  // ON the objective's area beats merely NEAR it — a terrain area placed on the
-  // objective inherits its name, so a token inside reads "on <label>".
-  let best = null, bd = 1e9, bin = false;
-  for (const o of LAYOUT_META.objectives || []){
-    const inside = o.poly && evInPoly(o.poly, x, z);
-    const d = inside ? 0 : (o.poly ? evPolyDist(o.poly, x, z) : Math.hypot(x - o.x, z - o.z));
-    if (d < bd){ bd = d; best = o; bin = inside; }
-  }
-  if (best && bd <= 3){
-    const lbl = best.label || (best.kind || 'objective');
-    parts.unshift((bin ? 'on ' : 'near ') + lbl);
-  }
-  let tbest = 1e9;
-  for (const tp of LAYOUT_META.terrain || []) tbest = Math.min(tbest, evPolyDist(tp, x, z));
-  if (tbest === 0) parts.push('in a terrain area');
-  else if (tbest <= 3) parts.push('near a terrain area');
-  if (!parts.length && LAYOUT_META.red_zone){
-    const dot = x * LAYOUT_META.red_zone[0] + z * LAYOUT_META.red_zone[1];
-    parts.push(dot > 0 ? 'red territory' : 'blue territory');
-  }
-  return parts.join(', ');
-}
+// evPlace/evInPoly/evPolyDist lived here and named a marker's position CLIENT-side. The
+// server does it now (zones.place/describe, tagged onto every marker in the db read path)
+// so the viewer, the analyze-game cruncher and the offline download cannot drift apart.
+// A marker with no `zone` is simply reported by name.
 function deriveEvents(){
   if (EVENTS && evFrameCount === FRAMES.length && evRosterRev === rosterRev) return EVENTS;
   evFrameCount = FRAMES.length; evRosterRev = rosterRev;
@@ -1539,10 +1491,10 @@ function deriveEvents(){
       }
       for (const p of appeared){
         // The SERVER names the zone (zones.place/describe), so the viewer, the analyze-game
-        // cruncher and the offline download all read one label. evPlace is only the fallback for
-        // a bundle the server could not place — no layout resolved, or the flip not yet decided
-        // on a live game. An EMPTY zone is a real answer (open ground), so test for null.
-        const where = p[3] != null ? p[3] : evPlace(p[0], p[1]);
+        // cruncher and the offline download all read one label. An EMPTY zone is a real answer
+        // (open ground); a MISSING one means the server could not place the bundle at all (no
+        // layout resolved, or the flip undecided), and the marker is then reported by name.
+        const where = p[3];        // server-tagged; absent only if it could not place at all
         // The server also says which of that side's HELD secondaries this spot bears on
         // (zones.bears_on, keyed off the card faces). "Bears on", not "scores" — Beacon,
         // Outflank and Plunder all score for being OUTSIDE the zone they name.

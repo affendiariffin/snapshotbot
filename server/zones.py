@@ -376,6 +376,11 @@ def place(x, z, lay, side=None, rnd=None, radius=0.0):
     if not lay:
         return {}
     out = {}
+    # A balance dataslate revised this layout but rapidingress still serves the pre-dataslate
+    # geometry, so every zone call here is against a board that is no longer the printed one.
+    # Stamped into layouts_meta at rebuild time; clears itself when the archive refreshes.
+    if lay.get("stale_dataslate"):
+        out["provisional"] = lay["stale_dataslate"]
 
     ranked = []
     for o in lay.get("objectives") or []:
@@ -473,7 +478,10 @@ def describe(p):
             parts.append("in %s's no-man's-land" % p["territory"])
         elif p.get("territory"):
             parts.append("%s territory" % p["territory"])
-    return ", ".join(parts)
+    out = ", ".join(parts)
+    if out and p.get("provisional"):
+        out += " (pre-dataslate layout)"
+    return out
 
 
 def tag_marker_zones(bundle):
