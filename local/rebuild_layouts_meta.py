@@ -14,8 +14,15 @@
 # polygons EXACTLY (mean/median/max deviation 0.00 over 183 pieces), which is what pins the
 # transform below; and afterwards all 240 markers sit inside their own area.
 #
-# NOT touched: `terrain`. meta holds 198 merged AREA outlines, RI holds 1103 individual footprints
-# -- a different granularity, not a mistrace. Swapping it would change the rendered board.
+# `terrain` IS rebuilt too (phase 0b). meta held 198 coarse merged outlines against rapidingress's
+# 1103 real footprints -- not a different granularity, INCOMPLETE: RE-RE-C carried 9 polys where the
+# layout has 13 distinct terrain areas, so a marker could sit 1.7in from a real area and report
+# 3.96in from anything the bot knew about. Two fields are written:
+#   terrain        flat list of every footprint -- what evPlace measures against
+#   terrain_areas  the same footprints grouped by rapidingress areaId, so an 11e terrain AREA
+#                  (several touching pieces) has one identity for the zone resolver
+# This does NOT change the rendered board: the viewer paints from the layout SVG (`bgImg`), and
+# LAYOUT_META.terrain is referenced in exactly one place, evPlace. Verified before writing this.
 #
 # Transforms -- NOTE THE SIGNS DIFFER, they are not the same convention:
 #   RI  -> world:  x = ri_x - 30           z = ri_y - 22     (RI is inches, board coords, y UP)
@@ -157,7 +164,8 @@ def main():
             ri["%s-%s-%s" % (codes[0], codes[1], x["variant"])] = x
 
     stats = {"layouts": 0, "objs": 0, "filled": 0, "replaced": 0, "worst_match": 0.0,
-             "verts_before": 0, "verts_after": 0, "lines": 0, "contained": 0, "max_dev": 0.0, "problems": []}
+             "verts_before": 0, "verts_after": 0, "lines": 0, "contained": 0, "max_dev": 0.0,
+             "ter_before": 0, "ter_after": 0, "areas": 0, "ter_layouts": 0, "problems": []}
 
     for key, lay in sorted(meta.items()):
         src = ri.get(key)
@@ -231,6 +239,24 @@ def main():
             if oi not in used_o:
                 stats["problems"].append("%s: %s got no area" % (key, o.get("label")))
 
+        # terrain: every footprint, plus the areaId grouping (an 11e terrain AREA is several pieces)
+        areas, flat = {}, []
+        for piece in src["terrain"]:
+            poly = simplify([list(ri_pt(p)) for p in piece["points"]])
+            if len(poly) < 3:
+                continue
+            flat.append(poly)
+            areas.setdefault(piece.get("areaId") or "?", []).append(poly)
+        if flat:
+            stats["ter_before"] += len(lay.get("terrain") or [])
+            stats["ter_after"] += len(flat)
+            stats["areas"] += len(areas)
+            lay["terrain"] = flat
+            lay["terrain_areas"] = [{"id": aid, "polys": ps} for aid, ps in sorted(areas.items())]
+            stats["ter_layouts"] += 1
+        else:
+            stats["problems"].append("%s: no terrain footprints in rapidingress" % key)
+
         line = territory_line(key)
         if line:
             lay["territory_line"] = line
@@ -239,13 +265,16 @@ def main():
             stats["problems"].append("%s: no territory line in SVG" % key)
 
     ok = (stats["layouts"] == len(meta) and stats["objs"] == stats["contained"]
-          and stats["lines"] == len(meta) and not stats["problems"])
+          and stats["lines"] == len(meta) and stats["ter_layouts"] == len(meta)
+          and not stats["problems"])
 
     print("layouts rebuilt      : %d / %d" % (stats["layouts"], len(meta)))
     print("objective areas      : %d  (%d newly filled, %d replaced)"
           % (stats["objs"], stats["filled"], stats["replaced"]))
     print("marker inside area   : %d / %d   <-- identity gate"
           % (stats["contained"], stats["objs"]))
+    print("terrain footprints   : %d -> %d  in %d areas" % (
+          stats["ter_before"], stats["ter_after"], stats["areas"]))
     print("territory lines      : %d" % stats["lines"])
     print("worst marker->area   : %.2f in" % stats["worst_match"])
     print("max outline deviation: %.3f in  (tol %.2f)   <-- shape gate"
