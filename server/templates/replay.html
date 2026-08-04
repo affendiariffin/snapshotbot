@@ -132,7 +132,10 @@
   .ts-callouts{position:absolute;left:0;right:0;height:72px;z-index:30;pointer-events:none}
   #calloutRed{bottom:100%;margin-bottom:27px}
   #calloutBlue{top:100%;margin-top:27px}
-  .ts-callout{position:absolute;transform:translateX(-50%);max-width:88%;z-index:1;
+  /* NOT translateX(-50%): the bubble is placed by its LEFT edge so it can slide to fit the lane
+     and the leader meets it wherever it lands. Centring it on the leader capped the usable width
+     (a 96%-wide bubble could only sit dead centre) and truncated the text (Fendi, 2026-08-04). */
+  .ts-callout{position:absolute;max-width:96%;z-index:1;
     font-size:.85rem;line-height:1.35;background:#000e;border:1px solid var(--border);
     border-radius:5px;padding:3px 10px;overflow:hidden;pointer-events:auto;
     display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
@@ -1375,7 +1378,7 @@ function deriveEvents(){
   // VP bookings netted per (side, turn window), stamped at the last booking frame
   const book = {}, prevv = {};
   FRAMES.forEach((f, i) => {
-    for (const side of ['red', 'blue']) for (const fld of ['primary', 'secondary']){
+    for (const side of ['red', 'blue']) for (const fld of ['primary', 'secondary', 'cp']){
       const v = f.scores && f.scores[side] ? f.scores[side][fld] : null;
       if (v == null) continue;
       const k = side + '|' + fld;
@@ -1384,6 +1387,12 @@ function deriveEvents(){
         const g = book[wk] = book[wk] || {i: i, side: side, r: f.round || 0, d: {}, fin: {}};
         g.i = i; g.r = f.round || 0;
         g.d[fld] = (g.d[fld] || 0) + (v - prevv[k]); g.fin[fld] = v;
+        // CP swings both ways inside one turn (gain a CP, then spend two on stratagems). Netting
+        // that to a single number hides the spending, so keep the directions apart.
+        if (fld === 'cp'){
+          const dv = v - prevv[k];
+          if (dv > 0) g.cpUp = (g.cpUp || 0) + dv; else g.cpDn = (g.cpDn || 0) - dv;
+        }
       }
       prevv[k] = v;
     }
@@ -1445,16 +1454,15 @@ function deriveEvents(){
     if (dS <= 0 && (dCp > 0 || (dCp < 0 && drawsInWin[g.side][g.w]))) continue;
     if (dS > 0){
       const bk = book[g.side + '|' + g.w];
-      let tot = '';
+      // no running total here — the score panel below already carries it (Fendi, 2026-08-04)
       if (bk && bk.d.secondary === dS){
         consumed.add(g.side + '|' + g.w);
-        tot = ` → ${bk.fin.secondary}`;
         g.i = Math.max(g.i, bk.i);
       }
       const cap = infos.every(x => x) ? infos.reduce((a, x) => a + x.max, 0) : null;
       let txt = (cap != null && dS > cap)
-        ? `${g.cards.join(' + ')} likely scored +${cap} · +${dS - cap} other${tot}`
-        : `${g.cards.join(' + ')} likely scored +${dS}${tot}`;
+        ? `${g.cards.join(' + ')} likely scored +${cap} · +${dS - cap} other`
+        : `${g.cards.join(' + ')} likely scored +${dS}`;
       if (g.cards.length === 1 && infos[0]){
         const w0 = infos[0].when;
         if (w0 === 'own' && !own) txt += ' (own-turn card — score likely from previous turn)';
@@ -1465,10 +1473,16 @@ function deriveEvents(){
       add(g.i, g.side, txt);
     } else add(g.i, g.side, `${g.cards.join(' + ')} → gone, unclear`);
   }
-  for (const [wk, g] of Object.entries(book))
+  for (const [wk, g] of Object.entries(book)){
+    if (g.cpUp || g.cpDn){
+      const parts = [];
+      if (g.cpDn) parts.push(`−${g.cpDn} spent`);
+      if (g.cpUp) parts.push(`+${g.cpUp} gained`);
+      add(g.i, g.side, 'CP ' + parts.join(', '));
+    }
     for (const fld of ['primary', 'secondary']){
       if (!g.d[fld] || (fld === 'secondary' && consumed.has(wk))) continue;
-      let txt = `${fld === 'primary' ? 'primaries' : 'secondaries'} ${g.d[fld] > 0 ? '+' : ''}${g.d[fld]} → ${g.fin[fld]}`;
+      let txt = `${fld === 'primary' ? 'primaries' : 'secondaries'} ${g.d[fld] > 0 ? '+' : ''}${g.d[fld]}`;
       if (g.d[fld] > 15) txt += ' ⚠ above the 15/round cap — multi-round lump?';
       else if (fld === 'primary' && MS && MS.primaries){
         const pn = sidePrimary[g.side], pm = pn && MS.primaries[pn];
@@ -1477,6 +1491,7 @@ function deriveEvents(){
       }
       add(g.i, g.side, txt);
     }
+  }
   // markers: genuine NEW drops only — a vanished same-name position nearby = a move
   let prevPos = {};
   FRAMES.forEach((f, i) => {
@@ -1627,18 +1642,23 @@ function renderCallouts(){
     el.appendChild(lead);
     const b = document.createElement('div');
     b.className = 'ts-callout ' + side;
-    b.style.left = truePct + '%';
+    // Measure at left:0. An absolutely-positioned box only gets the width REMAINING to its right,
+    // so measuring at the event's own offset makes a right-hand callout report a squeezed width
+    // (104px vs its true 562px at 96%) and wrap before we ever read it.
+    b.style.left = '0px';
     const cmsgs = msgs.map(m => m.charAt(0).toUpperCase() + m.slice(1));
     b.textContent = cmsgs.join(' · ');
     b.title = cmsgs.join('\n');
     el.appendChild(b);
-    // clamp by measurement: stay inside the lane, but never slide off the
-    // leader line — its end must remain inside the bubble
-    const elW = el.offsetWidth, half = b.offsetWidth / 2, pad = 14;
+    // Place by the LEFT edge: prefer centred on the leader, then slide to fit the lane. Once the
+    // bubble is inside the lane the leader is necessarily inside the bubble, so no second clamp is
+    // needed — `pad` only stops the line meeting a rounded corner.
+    const elW = el.offsetWidth, w = b.offsetWidth, pad = 10;
     const tpx = truePct / 100 * elW;
-    let cpx = Math.min(elW - half, Math.max(half, tpx));
-    cpx = Math.min(Math.max(cpx, tpx - half + pad), tpx + half - pad);
-    b.style.left = (cpx / elW * 100) + '%';
+    let lx = Math.max(0, Math.min(elW - w, tpx - w / 2));
+    if (tpx - lx < pad) lx = Math.max(0, tpx - pad);
+    else if (lx + w - tpx < pad) lx = Math.min(elW - w, tpx + pad - w);
+    b.style.left = lx + 'px';
   }
 }
 function show(n){
