@@ -386,7 +386,16 @@ def replay_download(slug):
             mission_scoring = json.load(f)
     except OSError:
         mission_scoring = None
-    embedded = {"session": bundle, "geom": db.geom_export(keys),
+    # Threat grids for this layout only (2 x ~3KB) -- the offline copy has no network, and a
+    # download that silently lost the deployment overlay would look like a bug in the feature.
+    heat = {}
+    if key:
+        for side in ("red", "blue"):
+            p = os.path.join(app.static_folder, "layouts", "heat", "%s-%s.png" % (key, side))
+            if os.path.exists(p):
+                with open(p, "rb") as f:
+                    heat[side] = base64.b64encode(f.read()).decode()
+    embedded = {"session": bundle, "geom": db.geom_export(keys), "heat": heat,
                 "layout_svg": layout_svg, "base_sizes": base_sizes,
                 "cards": db.cards_export(card_keys), "card_names": card_names_json,
                 "markers": marker_b64, "marker_names": marker_names,

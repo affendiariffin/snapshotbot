@@ -337,6 +337,63 @@ if (EMBEDDED && EMBEDDED.layout_svg)
   bgImg.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(EMBEDDED.layout_svg);
 else if (LAYOUT_KEY) bgImg.src = '/static/layouts/' + LAYOUT_KEY + '.svg';
 
+/* ---------- deployment threat overlay ----------
+   Baked offline by local/bake_threat_maps.py, one 120x88 greyscale grid per layout per side:
+   each pixel is the fraction of THAT side's forward deployment line that can draw line of
+   sight to that half-inch square. Shown under the models during DEPLOYMENT ONLY (round 0),
+   and only while hovering a model of the other side — hover red, see what blue's guns cover.
+   The hover is the whole control: no toggle, no legend.
+   The ramp constants mirror the bake's GAMMA/ALPHA/ALPHA_CAP and are republished in
+   static/layouts/heat/MANIFEST.json — change them together or the viewer drifts from the bake.
+   NO FLIP: flipFrame() already rotates the recorded world into the layout SVG's orientation,
+   and these grids are baked in that same space. A second flip here would mirror them. */
+const HEAT_GAMMA = 0.40, HEAT_ALPHA = 1.56, HEAT_CAP = 0.95;
+const HEAT_RAMP = {red: [[0x7a, 0x1e, 0x24], [0xff, 0x6b, 0x6b]],
+                   blue: [[0x18, 0x28, 0x55], [0x7a, 0xb8, 0xff]]};
+const HEAT = {};
+for (const side of ['red', 'blue']){
+  const src = (EMBEDDED && EMBEDDED.heat && EMBEDDED.heat[side])
+    ? 'data:image/png;base64,' + EMBEDDED.heat[side]
+    : (LAYOUT_KEY ? '/static/layouts/heat/' + LAYOUT_KEY + '-' + side + '.png' : null);
+  if (!src) continue;
+  const img = new Image();
+  HEAT[side] = {img: img};
+  img.onload = () => draw();
+  img.onerror = () => { HEAT[side] = null; };   // unbaked layout: just no overlay, no noise
+  img.src = src;
+}
+// Grey -> the firing side's colour, alpha rising with exposure. Built once per side and
+// cached, same pattern as tintedSil.
+function heatCanvas(side){
+  const h = HEAT[side];
+  if (!h || !h.img.complete || !h.img.naturalWidth) return null;
+  if (h.canvas) return h.canvas;
+  const c = document.createElement('canvas');
+  c.width = h.img.naturalWidth; c.height = h.img.naturalHeight;
+  const x = c.getContext('2d');
+  x.drawImage(h.img, 0, 0);
+  const d = x.getImageData(0, 0, c.width, c.height), p = d.data;
+  const lo = HEAT_RAMP[side][0], hi = HEAT_RAMP[side][1];
+  for (let i = 0; i < p.length; i += 4){
+    const v = p[i] / 255;
+    p[i] = lo[0] + (hi[0] - lo[0]) * v;
+    p[i + 1] = lo[1] + (hi[1] - lo[1]) * v;
+    p[i + 2] = lo[2] + (hi[2] - lo[2]) * v;
+    p[i + 3] = Math.min(HEAT_CAP, HEAT_ALPHA * Math.pow(v, HEAT_GAMMA)) * 255;
+  }
+  x.putImageData(d, 0, 0);
+  return h.canvas = c;
+}
+// Which side's guns to paint: the OTHER side's, so hovering your own model answers "what is
+// covering me". Reserve-gutter models (m.v) count too — "what will shoot this when it lands"
+// is a real deployment question. Unclaimed (grey) models have no side to answer for.
+function heatSide(){
+  const f = FRAMES[cur];
+  if (!f || (f.round || 0)) return null;
+  const t = hoverModel && hoverModel.t;
+  return t === 'red' ? 'blue' : t === 'blue' ? 'red' : null;
+}
+
 // Official Base Size Guide (Event Companion, June 2026) — name match beats the Lua
 // bounds oval; Hull/unknown units keep the bounds fallback. Flying bases measure to
 // the base itself: large stem base = 60mm round, small = 32mm.
@@ -657,6 +714,11 @@ function draw(){
     const [bx, by] = W2S(-HX, HZ);
     ctx.drawImage(bgImg, bx, by, 2 * HX * cam.scale, 2 * HZ * cam.scale);
   }
+  const heatOn = heatSide(), heatC = heatOn && heatCanvas(heatOn);
+  if (heatC){
+    const [bx, by] = W2S(-HX, HZ);
+    ctx.drawImage(heatC, bx, by, 2 * HX * cam.scale, 2 * HZ * cam.scale);
+  }
   ctx.strokeStyle = '#2a3550'; ctx.lineWidth = 2;
   poly([[-HX,-HZ],[HX,-HZ],[HX,HZ],[-HX,HZ]]); ctx.stroke();
 
@@ -761,6 +823,20 @@ function draw(){
     ctx.fillStyle = '#000d'; ctx.fillRect(mx - w / 2 - 6, my - 26, w + 12, 20);
     ctx.fillStyle = '#f0c040'; ctx.textAlign = 'center'; ctx.fillText(lab, mx, my - 10);
   }
+
+  // Provenance + limits, only while the overlay is up. A heat map LOOKS quantitative, and
+  // this one is official-layout geometry at ground level — not a reading of the real table.
+  if (heatC){
+    const [lx, ly] = W2S(-HX + 0.4, -HZ + 1.4);
+    ctx.textAlign = 'left';
+    ctx.font = '600 ' + (12 * devicePixelRatio) + 'px Segoe UI';
+    ctx.fillStyle = heatOn === 'red' ? '#e05555' : '#5588e0';
+    ctx.fillText('what ' + heatOn + "'s deployment line covers", lx, ly);
+    ctx.font = (10 * devicePixelRatio) + 'px Segoe UI';
+    ctx.fillStyle = '#7a8299';
+    ctx.fillText('official ' + (LAYOUT_KEY || 'layout') + ' geometry, ground level only'
+      + ' · layout data: rapidingress.com', lx, ly + 14 * devicePixelRatio);
+  }
 }
 
 function hitModel(wx, wz){
@@ -808,11 +884,15 @@ cv.addEventListener('mousemove', e => {
   if (m){
     const col = m.t === 'red' ? '#e05555' : m.t === 'blue' ? '#5588e0' : '#9aa2b5';
     const ds = m.u && DSHEET[m.u + '|' + m.n];   // the Yellowscribe datasheet, as fielded
+    // During deployment the hover IS the threat overlay, and a full datasheet plus the
+    // min(46vh,520px) abilities panel would sit right over the board it just lit up. Head
+    // line only for those frames. Delete this one flag to get the panels back everywhere.
+    const compact = !(FRAMES[cur].round || 0);
     showTip(m, e,
       '<div class="tt-head"><b style="color:' + col + '">' + esc(m.n || 'model') + '</b>' +
       (m.w ? ' <span class="tt-w">' + esc(m.w) + ' W</span>' : '') + '</div>' +
-      (ds ? '<div class="tt-ds">' + ds + '</div>' : ''),
-      m.u ? ABILHTML[m.u] : null);
+      (ds && !compact ? '<div class="tt-ds">' + ds + '</div>' : ''),
+      (m.u && !compact) ? ABILHTML[m.u] : null);
   } else {
     const mk = hitMarker(wx, wz);
     if (mk){
@@ -832,7 +912,7 @@ function setTool(t){
   for (const [id, name] of [['toolRuler', 'ruler'], ['toolDoodle', 'doodle']])
     document.getElementById(id).classList.toggle('active', name === tool);
   cv.className = tool === 'pan' ? '' : tool;
-  const hints = {pan: 'hover = datasheet · abilities panel is scrollable — move onto it',
+  const hints = {pan: panHint(),
                  ruler: 'drag between models — snaps to bases, edge-to-edge inches · click Ruler again to exit',
                  doodle: 'draw on the board — strokes stick to this frame · click Doodle again to exit'};
   document.getElementById('hint').textContent = hints[tool];
@@ -1659,10 +1739,19 @@ function renderCallouts(){
     b.style.left = lx + 'px';
   }
 }
+// What hovering does changes between deployment and the game, so the hint has to follow the
+// FRAME, not just the tool — otherwise it promises a datasheet that round 0 deliberately
+// suppresses.
+function panHint(){
+  return (FRAMES[cur] && !(FRAMES[cur].round || 0))
+    ? 'hover a model = what the other side\'s deployment line covers'
+    : 'hover = datasheet · abilities panel is scrollable — move onto it';
+}
 function show(n){
   cur = Math.max(0, Math.min(FRAMES.length - 1, n));
   labelEl.textContent = FRAMES.length ? `${frameLabel(FRAMES[cur])} (${cur + 1}/${FRAMES.length})` : 'no snapshots yet';
   ruler = null;
+  if (tool === 'pan') document.getElementById('hint').textContent = panHint();
   renderPanel(); draw(); updateClocks(); renderCallouts();
 }
 function setPlaying(on){
