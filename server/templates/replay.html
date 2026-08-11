@@ -402,13 +402,19 @@ function deploymentView(i){
   const f = FRAMES[i];
   return !!f && (!(f.round || 0) || i === deployEndIndex());
 }
-// Which side's guns to paint: the OTHER side's, so hovering your own model answers "what is
-// covering me". Reserve-gutter models (m.v) count too — "what will shoot this when it lands"
-// is a real deployment question. Unclaimed (grey) models have no side to answer for.
-function heatSide(){
-  if (!deploymentView(cur)) return null;
+// Which guns to paint. Hovering a claimed model narrows to the OTHER side's — "what is
+// covering me"; reserve-gutter models (m.v) count too, since "what will shoot this when it
+// lands" is a real deployment question. With nothing hovered (which is how the page opens)
+// BOTH go up as an overview (Fendi, 2026-08-11) — you land on the deployment/R1 boundary and
+// see both projections at once without touching anything. A grey model keeps the overview
+// rather than blanking the board: it has no side to answer for, and flashing to nothing
+// while the cursor crosses one reads as a glitch.
+function heatSides(){
+  if (!deploymentView(cur)) return [];
   const t = hoverModel && hoverModel.t;
-  return t === 'red' ? 'blue' : t === 'blue' ? 'red' : null;
+  if (t === 'red') return ['blue'];
+  if (t === 'blue') return ['red'];
+  return ['red', 'blue'];
 }
 
 // Official Base Size Guide (Event Companion, June 2026) — name match beats the Lua
@@ -731,10 +737,21 @@ function draw(){
     const [bx, by] = W2S(-HX, HZ);
     ctx.drawImage(bgImg, bx, by, 2 * HX * cam.scale, 2 * HZ * cam.scale);
   }
-  const heatOn = heatSide(), heatC = heatOn && heatCanvas(heatOn);
-  if (heatC){
+  const heatOn = heatSides();
+  let heatDrawn = 0;
+  if (heatOn.length){
     const [bx, by] = W2S(-HX, HZ);
-    ctx.drawImage(heatC, bx, by, 2 * HX * cam.scale, 2 * HZ * cam.scale);
+    for (const s of heatOn){
+      const c = heatCanvas(s);
+      if (!c) continue;
+      // Both at once would stack to near-opaque where the two overlap, so the pair is drawn
+      // lighter than a single side. Overlap still reads darker//muddier than either alone —
+      // that ground is covered by both, which is worth seeing.
+      ctx.globalAlpha = heatOn.length > 1 ? 0.72 : 1;
+      ctx.drawImage(c, bx, by, 2 * HX * cam.scale, 2 * HZ * cam.scale);
+      ctx.globalAlpha = 1;
+      heatDrawn++;
+    }
   }
   ctx.strokeStyle = '#2a3550'; ctx.lineWidth = 2;
   poly([[-HX,-HZ],[HX,-HZ],[HX,HZ],[-HX,HZ]]); ctx.stroke();
@@ -843,12 +860,14 @@ function draw(){
 
   // Provenance + limits, only while the overlay is up. A heat map LOOKS quantitative, and
   // this one is official-layout geometry at ground level — not a reading of the real table.
-  if (heatC){
+  if (heatDrawn){
     const [lx, ly] = W2S(-HX + 0.4, -HZ + 1.4);
     ctx.textAlign = 'left';
     ctx.font = '600 ' + (12 * devicePixelRatio) + 'px Segoe UI';
-    ctx.fillStyle = heatOn === 'red' ? '#e05555' : '#5588e0';
-    ctx.fillText('what ' + heatOn + "'s deployment line covers", lx, ly);
+    ctx.fillStyle = heatOn.length > 1 ? '#9aa2b5'
+      : heatOn[0] === 'red' ? '#e05555' : '#5588e0';
+    ctx.fillText(heatOn.length > 1 ? 'what both deployment lines cover'
+      : 'what ' + heatOn[0] + "'s deployment line covers", lx, ly);
     ctx.font = (10 * devicePixelRatio) + 'px Segoe UI';
     ctx.fillStyle = '#7a8299';
     ctx.fillText('official ' + (LAYOUT_KEY || 'layout') + ' geometry, ground level only'
