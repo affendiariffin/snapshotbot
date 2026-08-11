@@ -384,12 +384,29 @@ function heatCanvas(side){
   x.putImageData(d, 0, 0);
   return h.canvas = c;
 }
+/* Frames the deployment read applies to: every round-0 frame, PLUS the first round-1 frame.
+   That boundary frame is where an ended replay OPENS (see the loader) and where the timeline
+   cursor sits by default — the round marker has flipped but nothing has moved yet, so it is
+   still the deployment picture and the overlay has to be alive there (Fendi, 2026-08-11).
+   ONE predicate with three consumers — the overlay, the tooltip compaction and the footer
+   hint. Split them and the hint starts promising something the board isn't doing. */
+let deployEnd = -1, deployEndCount = -1;
+function deployEndIndex(){
+  if (deployEndCount !== FRAMES.length){          // FRAMES only appends; recompute as it grows
+    deployEndCount = FRAMES.length;
+    deployEnd = FRAMES.findIndex(f => (f.round || 0) >= 1);
+  }
+  return deployEnd;
+}
+function deploymentView(i){
+  const f = FRAMES[i];
+  return !!f && (!(f.round || 0) || i === deployEndIndex());
+}
 // Which side's guns to paint: the OTHER side's, so hovering your own model answers "what is
 // covering me". Reserve-gutter models (m.v) count too — "what will shoot this when it lands"
 // is a real deployment question. Unclaimed (grey) models have no side to answer for.
 function heatSide(){
-  const f = FRAMES[cur];
-  if (!f || (f.round || 0)) return null;
+  if (!deploymentView(cur)) return null;
   const t = hoverModel && hoverModel.t;
   return t === 'red' ? 'blue' : t === 'blue' ? 'red' : null;
 }
@@ -887,7 +904,7 @@ cv.addEventListener('mousemove', e => {
     // During deployment the hover IS the threat overlay, and a full datasheet plus the
     // min(46vh,520px) abilities panel would sit right over the board it just lit up. Head
     // line only for those frames. Delete this one flag to get the panels back everywhere.
-    const compact = !(FRAMES[cur].round || 0);
+    const compact = deploymentView(cur);
     showTip(m, e,
       '<div class="tt-head"><b style="color:' + col + '">' + esc(m.n || 'model') + '</b>' +
       (m.w ? ' <span class="tt-w">' + esc(m.w) + ' W</span>' : '') + '</div>' +
@@ -1743,7 +1760,7 @@ function renderCallouts(){
 // FRAME, not just the tool — otherwise it promises a datasheet that round 0 deliberately
 // suppresses.
 function panHint(){
-  return (FRAMES[cur] && !(FRAMES[cur].round || 0))
+  return deploymentView(cur)
     ? 'hover a model = what the other side\'s deployment line covers'
     : 'hover = datasheet · abilities panel is scrollable — move onto it';
 }
