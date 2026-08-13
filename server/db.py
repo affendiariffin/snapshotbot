@@ -379,6 +379,42 @@ def get_session_bundle(slug, after_id=0):
         return bundle
 
 
+def get_session_header(slug):
+    # NOT a bundle — deliberately has no `models`, `markers`, `notes` or `rosters`,
+    # and runs none of the enrichment passes. Anything that DRAWS a board wants
+    # get_session_bundle; this exists for the callers that only need to identify the
+    # session. `/r/<slug>` was loading a whole game (15.7 MB of `models` JSON on the
+    # biggest session) to compute a layout key and an OG card, discarding it, and then
+    # letting the browser fetch the same data again via /api/session/<slug>/data.
+    # Both consumers are models-free: layout_key_from_bundle reads `cards` (+ the
+    # `mission_meta` fallback), _og_card reads mission_meta / title / dates and the
+    # last frame's `scores` + `round`. Those four columns are all this selects.
+    with get_conn() as conn:
+        sess = conn.execute(
+            "SELECT id, slug, title, started_at, ended_at, mission_meta"
+            " FROM sb_sessions WHERE slug = %s",
+            (slug,),
+        ).fetchone()
+        if sess is None:
+            return None
+        snaps = conn.execute(
+            "SELECT id, round, scores, cards FROM sb_snapshots"
+            " WHERE session_id = %s ORDER BY id",
+            (sess["id"],),
+        ).fetchall()
+        return {
+            "slug": sess["slug"],
+            "title": sess["title"],
+            "started_at": sess["started_at"].isoformat(),
+            "ended_at": sess["ended_at"].isoformat() if sess["ended_at"] else None,
+            "mission_meta": sess["mission_meta"],
+            "snapshots": [
+                {"id": s["id"], "round": s["round"], "scores": s["scores"], "cards": s["cards"]}
+                for s in snaps
+            ],
+        }
+
+
 def list_sessions(limit=100):
     with get_conn() as conn:
         rows = conn.execute(

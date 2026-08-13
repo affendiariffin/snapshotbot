@@ -313,7 +313,10 @@ def replay_frame(slug):
 
 @app.get("/r/<slug>")
 def replay(slug):
-    bundle = db.get_session_bundle(slug)
+    # Header only: this page renders no board server-side (embedded_json=None — the
+    # client pulls the frames itself), so it needs a layout key and an OG card and
+    # nothing else. See db.get_session_header for why that matters.
+    bundle = db.get_session_header(slug)
     if bundle is None:
         return "Unknown or expired session (replays keep for 30 days).", 404
     key = layout_key_from_bundle(bundle)
