@@ -405,7 +405,7 @@ def get_session_header(slug):
         if sess is None:
             return None
         snaps = conn.execute(
-            "SELECT id, round, scores, cards FROM sb_snapshots"
+            "SELECT id, taken_at, round, scores, cards FROM sb_snapshots"
             " WHERE session_id = %s ORDER BY id",
             (sess["id"],),
         ).fetchall()
@@ -416,10 +416,45 @@ def get_session_header(slug):
             "ended_at": sess["ended_at"].isoformat() if sess["ended_at"] else None,
             "mission_meta": sess["mission_meta"],
             "snapshots": [
-                {"id": s["id"], "round": s["round"], "scores": s["scores"], "cards": s["cards"]}
+                {"id": s["id"], "taken_at": s["taken_at"].isoformat(), "round": s["round"],
+                 "scores": s["scores"], "cards": s["cards"]}
                 for s in snaps
             ],
         }
+
+
+def get_early_models(slug):
+    # The deployment-era window (round < 2), which is irreducible context for anything that
+    # draws a board: flip_sign() decides the world's orientation from claimed models here, and
+    # backfill_teams() builds its red/blue claim map from unclaimed round-0 positions. Without
+    # it every zone comes out mirrored and un-GMNoted models lose their tint.
+    # NOT cheap -- measured 24-49% of a session's total `models` bytes, because deployment is
+    # where the snapshot stream is densest. Loading one frame plus this is roughly half a
+    # game, not a sliver of one.
+    with get_conn() as conn:
+        return [
+            {"id": r["id"], "round": r["round"], "models": r["models"]}
+            for r in conn.execute(
+                "SELECT sn.id, sn.round, sn.models FROM sb_snapshots sn"
+                " JOIN sb_sessions s ON s.id = sn.session_id"
+                " WHERE s.slug = %s AND sn.round < 2 ORDER BY sn.id",
+                (slug,),
+            ).fetchall()
+        ]
+
+
+def get_frame_models(slug, snap_id):
+    # One frame's heavy payload, by exact snapshot id. Callers pick the id off the header
+    # (which carries id/round/taken_at/scores/cards for every frame) and then fetch only the
+    # frame they are about to render.
+    with get_conn() as conn:
+        r = conn.execute(
+            "SELECT sn.id, sn.models, sn.markers FROM sb_snapshots sn"
+            " JOIN sb_sessions s ON s.id = sn.session_id"
+            " WHERE s.slug = %s AND sn.id = %s",
+            (slug, snap_id),
+        ).fetchone()
+        return {"id": r["id"], "models": r["models"], "markers": r["markers"]} if r else None
 
 
 def list_sessions(limit=100):

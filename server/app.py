@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 
 from server import db, meshgeom
 from server.api import ADMIN_KEY, api, is_admin, token_version
-from server.zones import layout_key_from_bundle, layouts_meta
+from server.zones import backfill_teams, layout_key_from_bundle, layouts_meta
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 256 * 1024
@@ -219,6 +219,40 @@ def _frame_assets(frame):
     return models, geom
 
 
+def _board_bundle(slug, header, want_id):
+    """Bundle-shaped object carrying only what _compose_board actually reads, instead of the
+    whole game. Three parts, each load-bearing:
+
+      * every frame's `cards`, straight off the header -- backfill_teams calls
+        layout_key_from_bundle internally, and that reads loose cards across ALL snapshots.
+        Hand it one frame and it can pick a different layout, hence different deployment
+        polygons, hence different team claims. This is the subtle one.
+      * the round<2 models -- flip_sign() derives board orientation from them and
+        backfill_teams() builds its claim map from round-0 positions. Not optional, and not
+        small: 24-49% of a session's model bytes live in this window.
+      * the target frame's models + markers.
+
+    The other three enrichment passes are deliberately skipped: tag_reserve_zones and
+    tag_marker_zones only annotate zone NAMES (for callouts) and enrich_rosters only touches
+    rosters -- nothing the board renderer reads. backfill_teams is the one that matters,
+    because it sets m["t"], which drives both the flip and every model's tint.
+    """
+    early = {e["id"]: e["models"] for e in db.get_early_models(slug)}
+    tgt = db.get_frame_models(slug, want_id) or {}
+    snaps = []
+    for s in header["snapshots"]:
+        s2 = dict(s)
+        if s["id"] in early:
+            s2["models"] = early[s["id"]]
+        if s["id"] == want_id:
+            s2["models"] = tgt.get("models") or []
+            s2["markers"] = tgt.get("markers") or []
+        snaps.append(s2)
+    bundle = dict(header, snapshots=snaps)
+    backfill_teams(bundle, [s for s in snaps if (s.get("round") or 0) < 2])
+    return bundle, next(s for s in snaps if s["id"] == want_id)
+
+
 def _compose_board(bundle, key, frame, models, geom, markers=False, caption=None):
     f = _flip_sign(bundle, key)
     board = Image.open(
@@ -265,15 +299,16 @@ def _png_response(ck, render):
 def replay_thumb(slug):
     # Link-preview image: the layout base render + the board at the start of the
     # first player turn, models drawn with their real tinted silhouettes.
-    bundle = db.get_session_bundle(slug)
-    if bundle is None:
+    header = db.get_session_header(slug)
+    if header is None:
         return "unknown session", 404
-    key = layout_key_from_bundle(bundle)
+    key = layout_key_from_bundle(header)
     base_path = os.path.join(app.static_folder, "layouts", "png", f"{key}.png")
-    if not key or not os.path.exists(base_path) or not bundle["snapshots"]:
+    if not key or not os.path.exists(base_path) or not header["snapshots"]:
         return redirect("/static/og-banner.png")
-    frame = next((s for s in bundle["snapshots"] if (s.get("round") or 0) >= 1),
-                 bundle["snapshots"][-1])
+    pick = next((s for s in header["snapshots"] if (s.get("round") or 0) >= 1),
+                header["snapshots"][-1])
+    bundle, frame = _board_bundle(slug, header, pick["id"])
     models, geom = _frame_assets(frame)
     ck = (slug, frame["id"], len(geom))   # re-render once late silhouettes land
     return _png_response(ck, lambda: _compose_board(bundle, key, frame, models, geom))
@@ -284,17 +319,18 @@ def replay_frame(slug):
     # Post-game analysis frame shots: the thumb pipeline at ANY snapshot (?snap=<id>,
     # nearest at-or-before match; default last), plus marker overlay and a caption
     # strip (round / elapsed / score / active turn).
-    bundle = db.get_session_bundle(slug)
-    if bundle is None:
+    header = db.get_session_header(slug)
+    if header is None:
         return "unknown session", 404
-    key = layout_key_from_bundle(bundle)
-    snaps = bundle["snapshots"]
+    key = layout_key_from_bundle(header)
+    snaps = header["snapshots"]
     if not key or not snaps or not os.path.exists(
             os.path.join(app.static_folder, "layouts", "png", f"{key}.png")):
         return "no layout or frames", 404
     snap_id = request.args.get("snap", type=int)
-    frame = (snaps[-1] if snap_id is None
-             else next((s for s in reversed(snaps) if s["id"] <= snap_id), snaps[0]))
+    pick = (snaps[-1] if snap_id is None
+            else next((s for s in reversed(snaps) if s["id"] <= snap_id), snaps[0]))
+    bundle, frame = _board_bundle(slug, header, pick["id"])
     models, geom = _frame_assets(frame)
 
     def render():
