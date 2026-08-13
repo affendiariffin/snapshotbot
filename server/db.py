@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS sb_mesh_geom (
     error       TEXT,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- asset_revs() reads max(created_at) here on EVERY replay page load. Unindexed that is a
+-- seq scan of the whole main heap (8,801 rows = 1,217 buffers = 9.7 MB), which parked the
+-- entire table in Postgres's shared_buffers -- 75% of the instance's cache for one
+-- cache-busting timestamp. With this index the same query is 4 buffers. The rows are wide,
+-- so the scan cost tracks main-heap width, not row count: sb_card_images runs the identical
+-- max(created_at) for 1 buffer because its payload all lives in TOAST.
+CREATE INDEX IF NOT EXISTS sb_mesh_geom_created_idx ON sb_mesh_geom (created_at);
 
 -- The Yellowscribe datasheet as FIELDED: every model carries a Description holding its
 -- statline + weapon profiles + abilities, and each unit's leader model carries a
