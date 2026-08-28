@@ -1,8 +1,9 @@
 # Bake the deployment THREAT MAPS -- server/static/layouts/heat/<KEY>-<side>.png.
 #
-# KEEPER, same standing as rebuild_layouts_meta.py: the geometry comes from the rapidingress
-# archive under docs/reference/rapidingress/, so this re-runs whenever that archive refreshes
-# (check the three ETags against its MANIFEST.json first).
+# KEEPER, same standing as rebuild_layouts_meta.py. Geometry comes from GW's own Warhammer
+# Event Companion via docs/reference/gw/gw_layouts.json (2026-08-28; rapidingress retired), so
+# this re-runs whenever a new companion ships -- see the gw-layouts skill for the pipeline order.
+# It must run AFTER rebuild_layouts_meta.py: the zones it fires from come from layouts_meta.
 #
 # WHAT IT COMPUTES. One 8-bit grid per layout per side. Cell value = the fraction of the OTHER
 # side's FORWARD DEPLOYMENT LINE that can draw line of sight to that cell. The question it answers,
@@ -40,16 +41,17 @@
 #   - DENSE feature hulls are SOLID at ground level and block UNCONDITIONALLY -- including to a
 #     target standing inside one. They are structures, not regions; no toe-in or target-in relief;
 #   - ground level, 2D. No elevation, no Plunging Fire, no >3in gaps. Same simplification shinebot
-#     ships, and the same one rapidingress ships.
+#     ships.
 #   - SEE_IN (Fendi's ruling for THIS map, 2026-08-11): a ray sees INTO a non-own obscuring area
 #     and stops at its exit edge, so a cell inside an area is visible from outside it. NOTE this is
 #     the OPPOSITE of shinebot's live setting (SEE_INTO_AREAS=false, perimeter-stop). Deliberate,
 #     not drift: under perimeter-stop every terrain area reads a flat 0% and the map can only grade
 #     open ground. Both variants were rendered for TH-RE-C and he ruled on the pair.
 #
-# Zones come from layouts_meta.json's red_poly/blue_poly, NOT from rapidingress's own
-# deploymentZones: those are labelled attacker/defender, and mapping that onto our red/blue would
-# be a guess. red_poly/blue_poly are already world-space and already agree with what the viewer
+# Zones come from layouts_meta.json's red_poly/blue_poly, NOT from the deployment polygons in
+# the source document: those are labelled attacker/defender, and mapping that onto our red/blue
+# would be a guess. red_poly/blue_poly are already world-space and already agree with what the
+# viewer
 # paints, which is the only agreement that matters.
 #
 # PNG ORIENTATION -- the one thing to get right, and the one thing that looks fine when wrong.
@@ -71,6 +73,7 @@ import json
 import os
 import sys
 
+import fitz
 import numpy as np
 from PIL import Image
 from shapely.geometry import Point, Polygon
@@ -78,14 +81,15 @@ from shapely.ops import unary_union
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
-from server.zones import CODE_ORDER      # noqa: E402
+import extract_gw_layouts as E           # noqa: E402
+import gw_pieces as G                    # noqa: E402
 
 LAYDIR = os.path.join(ROOT, "server", "static", "layouts")
 META = os.path.join(LAYDIR, "layouts_meta.json")
 HEATDIR = os.path.join(LAYDIR, "heat")
-RIDIR = os.path.join(ROOT, "docs", "reference", "rapidingress")
-RIJSON = os.path.join(RIDIR, "ri_layouts_11e.json")
+GWJSON = os.path.join(ROOT, "docs", "reference", "gw", "gw_layouts.json")
 REPORT = os.path.join(ROOT, "docs", "threat_bake_report.md")
 
 CELL = 0.5               # inches per grid cell
@@ -138,7 +142,7 @@ def crosses(origin, targets, e):
 
 def merge_touching(polys):
     # Where footprints are combined on the table they are ONE terrain piece (Fendi, 2026-08-11),
-    # but rapidingress still gives them separate areaIds -- TH-TH-B's central ruin is two plates
+    # but the source draws them as separate footprints -- TH-TH-B's central ruin is two plates
     # that literally overlap. Left split, each half blocks LOS to the other and the piece renders
     # with a hard diagonal seam down the middle, one side lit and one dark.
     #
@@ -167,20 +171,25 @@ def merge_touching(polys):
     return out
 
 
-def build_terrain(src):
-    # PLATE pieces (base=true) are the terrain AREA footprints; DENSE features are the solid walls.
-    # losPoints is rapidingress's own LOS hull where present -- prefer it over the detailed outline.
-    areas, dense = {}, []
-    for t in src["terrain"]:
-        g = poly_of([ri_pt(p) for p in (t.get("losPoints") or t["points"])])
-        if g.is_empty:
+def build_terrain(lay, lib, board):
+    """Terrain AREAS from the PDF's vector footprints; DENSE walls from the sprite silhouettes.
+
+    Source swapped from rapidingress to GW's Event Companion on 2026-08-28. RI supplied a
+    `losPoints` LOS hull per piece and a DENSE/LIGHT `category`; GW ships neither, so the areas
+    come from P1's traced polygons and the walls from P2's alpha-mask silhouettes, classified by
+    median hue (teal 170.5-171.0 = dense, gold 32-43 = light, a 128-degree gap).
+    LIGHT features are deliberately NOT returned: a light feature does not block, and the areas
+    already carry the obscuring behaviour. Same rule as before, different source.
+    """
+    areas = [g for g in (poly_of(p) for p in lay["terrain_areas"]) if not g.is_empty]
+    dense = []
+    for cls, poly in G.placed_features(lay, lib, board):
+        if cls != "dense":
             continue
-        if t.get("base"):
-            areas.setdefault(t["areaId"], []).append(g)
-        elif t.get("category") == "DENSE":
+        g = poly_of(poly)
+        if not g.is_empty:
             dense.append(g.simplify(0.1))
-    by_id = [unary_union(v).simplify(0.1) for v in areas.values()]
-    return merge_touching(by_id), merge_touching(dense)
+    return merge_touching(areas), merge_touching(dense)
 
 
 def grid_points():
@@ -458,11 +467,10 @@ def main():
 
     with open(META, encoding="utf-8") as f:
         meta = json.load(f)
-    with open(RIJSON, encoding="utf-8") as f:
-        ri = {}
-        for x in json.load(f):
-            codes = sorted(x["matchup"], key=CODE_ORDER.index)
-            ri["%s-%s-%s" % (codes[0], codes[1], x["variant"])] = x
+    with open(GWJSON, encoding="utf-8") as f:
+        gw = json.load(f)
+    doc = fitz.open(E.newest_companion())
+    lib = G.build_library(doc, gw)
 
     keys = args.layouts.split(",") if args.layouts else sorted(meta)
     os.makedirs(HEATDIR, exist_ok=True)
@@ -470,11 +478,12 @@ def main():
     problems, warnings, rows, shots = [], [], [], []
 
     for key in keys:
-        src = ri.get(key)
-        if not src:
-            problems.append("%s: absent from rapidingress" % key)
+        lay = gw.get(key)
+        if not lay:
+            problems.append("%s: absent from the GW extraction" % key)
             continue
-        areas, dense = build_terrain(src)
+        board = E.Board(E.board_rect(doc[lay["page"]]))
+        areas, dense = build_terrain(lay, lib, board)
         gate_merge(key, areas, dense, problems)
         zones = {"red": poly_of(meta[key]["red_poly"]), "blue": poly_of(meta[key]["blue_poly"])}
         for side in ("red", "blue"):
@@ -500,7 +509,7 @@ def main():
                 readback = gate_readback(key, side, path, zones[side], areas, dense, see_in,
                                          problems)
             rows.append((key, side, len(fps), nomans, own, far, p90, tested, flipped,
-                         readback, bool(meta[key].get("stale_dataslate"))))
+                         readback, False))
             base_png = os.path.join(LAYDIR, "png", "%s.png" % key)
             if len(shots) < args.report * 2 and os.path.exists(base_png):
                 shots.append((key, side, render(vis, cx, cz, base_png, side)))
@@ -509,10 +518,9 @@ def main():
                      "" if readback is None else "  readback=%.4f" % readback))
 
     if not args.dry_run:
-        digests = {}
-        for name in ("ri_terrain-data-11e.js", "ri_deployment-data.js", "ri_measurements-11e.js"):
-            with open(os.path.join(RIDIR, name), "rb") as f:
-                digests[name] = hashlib.md5(f.read()).hexdigest()
+        pdf = E.newest_companion()
+        with open(pdf, "rb") as f:
+            digests = {os.path.basename(pdf): hashlib.md5(f.read()).hexdigest()}
         with open(os.path.join(HEATDIR, "MANIFEST.json"), "w", encoding="utf-8") as f:
             json.dump({"cell_in": CELL, "firing_spacing_in": FIRE, "toe_in": TOE,
                        "ruleset": RULESET if see_in else "perimeter-v1",

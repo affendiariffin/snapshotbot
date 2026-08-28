@@ -1,66 +1,75 @@
-# Rebuild the objective AREAS and territory lines in server/static/layouts/layouts_meta.json.
+# Rebuild server/static/layouts/layouts_meta.json -- the file everything MEASURES against.
 #
-# KEEPER, not a throwaway: rapidingress lags GW by ~a week on every balance dataslate, so this
-# re-runs each time the archive under docs/reference/rapidingress/ is refreshed. Check the three
-# ETags against MANIFEST.json first (see reference_rapidingress) -- if they haven't moved, the
-# rebuild reproduces the current file byte-for-byte and there is nothing to do.
+# KEEPER, offline, re-runnable. Source is now **GW's own Warhammer Event Companion**, via
+# docs/reference/gw/gw_layouts.json (local/extract_gw_layouts.py). rapidingress is retired: it
+# lagged GW by ~a week on every dataslate, stopped tracking the CA26 layouts, and -- discovered
+# during the migration -- carried the wrong central-objective count on 6 layouts
+# (PF-DI-A/B/C, TH-PF-A/B/C say 1, GW prints 2) in every version we ever archived.
 #
-# WHY (audited 2026-08-04): objective areas were hand-traced and unreliable. 68 of 240 were never
-# traced at all -- evPlace then fell back to "near a terrain area" / "in blue's DZ" and never named
-# the objective -- and of the 172 that WERE traced, only 91 actually contained their own objective
-# marker; the rest were misplaced, some mirrored outright (RE-RE-C's central objective sat at
-# x[-3.0,5.1] where the real footprint is x[-5.0,3.1]). So we take all 240 from rapidingress rather
-# than only filling the gaps. Verified: RI terrain footprints land on the SVG terrain-layer
-# polygons EXACTLY (mean/median/max deviation 0.00 over 183 pieces), which is what pins the
-# transform below; and afterwards all 240 markers sit inside their own area.
+# WHAT THIS FILE FEEDS, AND WHY THE FIELD NAMES ARE A CONTRACT
+# zones.py reads this at runtime for every placement call: red_poly/blue_poly (deployment and
+# the team backfill), red_zone (flip detection), territory_line (a DIAGONAL split on 40 of 45
+# layouts, so never a board-axis test), terrain/terrain_areas (what evPlace measures to) and
+# objectives. bake_threat_maps.py reads the zone polygons.
 #
-# `terrain` IS rebuilt too (phase 0b). meta held 198 coarse merged outlines against rapidingress's
-# 1103 real footprints -- not a different granularity, INCOMPLETE: RE-RE-C carried 9 polys where the
-# layout has 13 distinct terrain areas, so a marker could sit 1.7in from a real area and report
-# 3.96in from anything the bot knew about. Two fields are written:
-#   terrain        flat list of every footprint -- what evPlace measures against
-#   terrain_areas  the same footprints grouped by rapidingress areaId, so an 11e terrain AREA
-#                  (several touching pieces) has one identity for the zone resolver
-# This does NOT change the rendered board: the viewer paints from the layout SVG (`bgImg`), and
-# LAYOUT_META.terrain is referenced in exactly one place, evPlace. Verified before writing this.
+# ⚠ objective["label"] IS PARSED, NOT JUST PRINTED. zone_tokens() decides whether a home
+# objective is yours or the enemy's with label.startswith("red"/"blue"), and that feeds
+# relevant_secondaries(). Rename those strings and the mission-scoring tokens go quietly
+# missing -- no error, just secondaries that stop being flagged. The vocabulary is fixed:
+#     home       "red's home objective"        / "blue's home objective"
+#     expansion  "red's expansion objective"   / "blue's expansion objective"
+#     central    "the central objective" when a layout has one; otherwise
+#                "the red-side central objective" / "the blue-side central objective"
+# Side is decided by the TERRITORY LINE, using the same cross-product test zones._territory()
+# uses, so the label and the runtime answer can never disagree.
 #
-# Transforms -- NOTE THE SIGNS DIFFER, they are not the same convention:
-#   RI  -> world:  x = ri_x - 30           z = ri_y - 22     (RI is inches, board coords, y UP)
-#   SVG -> world:  x = px/20 - 30          z = 22 - py/20    (viewBox 1200x880, screen coords, y DOWN)
-# The SVG form reproduces the existing red_poly/blue_poly to the last decimal. Getting the RI sign
-# wrong is nearly invisible on these mirror-symmetric layouts -- a flipped objective still lands
-# close to SOME objective -- so the gate below checks IDENTITY (does each marker fall inside the
-# area it was matched to), not proximity. Under the wrong sign that gate drops to ~90/240.
+# PRESERVED, NOT REBUILT: label, missions, attackerEdge. Those are mission metadata, not
+# geometry -- `missions` in particular is what layout_key_from_bundle() matches primary cards
+# against, so losing it silently breaks layout inference from the table.
 #
-# RI keys its layouts by its own disposition order (PF-TH-A where we say TH-PF-A), so the index is
-# rebuilt with CODE_ORDER rather than trusting `id`.
+# GATES (all of them exist because a weaker check passed while the data was wrong):
+#   IDENTITY  every objective must resolve to its OWN terrain area, bijectively. Distance to
+#             SOME objective stays small under a sign flip on these near-symmetric boards.
+#   SHAPE     max deviation of the simplified outline, never area -- area survives
+#             over-simplification, a 250-point ruin collapsed to 5 points at ratio 0.995.
+#   LABEL     every home/expansion label starts with the owner, per the contract above.
+#   CARRIED   all 45 keep label/missions/attackerEdge.
+#
+# `stale_dataslate` is GONE. It existed to flag layouts a dataslate had revised while
+# rapidingress still served the old geometry; with a GW-native source there is no lag to flag.
+# zones.py's reader is harmless when the key is absent (`lay.get`).
 
+import collections
 import json
-import math
 import os
-import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
-from server.zones import CODE_ORDER      # noqa: E402
+import gw_pieces as G                                              # noqa: E402
+
 LAYDIR = os.path.join(ROOT, "server", "static", "layouts")
 META = os.path.join(LAYDIR, "layouts_meta.json")
-RIJSON = os.path.join(ROOT, "docs", "reference", "rapidingress", "ri_layouts_11e.json")
-# Layouts a balance dataslate revised while rapidingress still serves the pre-dataslate geometry.
-# Read at BUILD time from the suite's registry so there is no cross-repo dependency at runtime --
-# the flag travels inside layouts_meta.json with the data it describes.
-STALE = os.path.join(ROOT, "..", "fnd-discord-suite", "fnd", "data", "stale_layouts.json")
-PPI = 20.0
-SIMP_TOL = 0.12          # inches the simplified objective outline may deviate from the raw footprint
+GWJSON = os.path.join(ROOT, "docs", "reference", "gw", "gw_layouts.json")
 
-def ri_pt(p):
-    return (round(p["x"] - 30.0, 3), round(p["y"] - 22.0, 3))
+SIMP_TOL = 0.12          # in: how far a simplified outline may move from the traced one
+CARRY = ("label", "missions", "attackerEdge")
 
 
-def svg_pt(x, y):
-    return (round(x / PPI - 30.0, 3), round(22.0 - y / PPI, 3))
+def centroid(poly):
+    return [round(sum(p[0] for p in poly) / len(poly), 2),
+            round(sum(p[1] for p in poly) / len(poly), 2)]
+
+
+def poly_area(poly):
+    a = 0.0
+    for i in range(len(poly)):
+        x1, z1 = poly[i - 1]
+        x2, z2 = poly[i]
+        a += x1 * z2 - x2 * z1
+    return abs(a) / 2.0
 
 
 def in_poly(poly, x, z):
@@ -75,256 +84,120 @@ def in_poly(poly, x, z):
     return inside
 
 
-def centroid(poly):
-    return (sum(p[0] for p in poly) / len(poly), sum(p[1] for p in poly) / len(poly))
+def edge_dist(poly, x, z):
+    if in_poly(poly, x, z):
+        return 0.0
+    return min(G._seg_dist((x, z), poly[i - 1], poly[i]) for i in range(len(poly)))
 
 
-def area(poly):
-    a = 0.0
-    for i in range(len(poly)):
-        x1, z1 = poly[i - 1]
-        x2, z2 = poly[i]
-        a += x1 * z2 - x2 * z1
-    return abs(a) / 2.0
-
-
-def _seg_dist(p, a, b):
-    dx, dz = b[0] - a[0], b[1] - a[1]
-    if dx == 0 and dz == 0:
-        return math.hypot(p[0] - a[0], p[1] - a[1])
-    t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / (dx * dx + dz * dz)))
-    return math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dz))
-
-
-def _dp(pts, tol):
-    if len(pts) < 3:
-        return list(pts)
-    worst, idx = 0.0, 0
-    for i in range(1, len(pts) - 1):
-        d = _seg_dist(pts[i], pts[0], pts[-1])
-        if d > worst:
-            worst, idx = d, i
-    if worst <= tol:
-        return [pts[0], pts[-1]]
-    return _dp(pts[:idx + 1], tol)[:-1] + _dp(pts[idx:], tol)
-
-
-def simplify(poly, tol=SIMP_TOL):
-    # RI footprints are densely sampled (up to ~250 points on one ruin) -- too heavy to ship and
-    # to run point-in-poly against every frame. Douglas-Peucker, which measures deviation from the
-    # RETAINED chord and so guarantees the outline never moves more than `tol` inches.
-    #
-    # Do NOT go back to dropping points that look collinear with their immediate neighbours: on a
-    # densely-sampled outline consecutive points sit ~0.03" apart, every one of them passes that
-    # test, and a 250-point ruin collapses to 5 points. Area survives that (a wrong shape can
-    # enclose the right area, ratio was 0.995) which is exactly why it slips through -- the gate
-    # has to be max deviation, not area.
-    if len(poly) < 4:
-        return list(poly)
-    closed = poly + [poly[0]]
-    out = _dp(closed, tol)
-    if len(out) > 1 and out[0] == out[-1]:
-        out.pop()
-    return out if len(out) >= 3 else list(poly)
-
-
-def svg_layer(src, name):
-    i = src.find('<g id="%s"' % name)
-    if i < 0:
-        return ""
-    depth, j = 0, i
-    while j < len(src):
-        if src.startswith("<g", j):
-            depth += 1
-        elif src.startswith("</g>", j):
-            depth -= 1
-            if depth == 0:
-                return src[i:j + 4]
-        j += 1
-    return src[i:]
-
-
-def territory_line(key):
-    path = os.path.join(LAYDIR, key + ".svg")
-    if not os.path.exists(path):
+def side_of(line, red_zone, x, z):
+    """red / blue, by the same cross-product test zones._territory() runs at runtime."""
+    (x1, z1), (x2, z2) = line
+    cross = (x2 - x1) * (z - z1) - (z2 - z1) * (x - x1)
+    ref = (x2 - x1) * (red_zone[1] - z1) - (z2 - z1) * (red_zone[0] - x1)
+    if cross == 0 or ref == 0:
         return None
-    with open(path, encoding="utf-8") as f:
-        lay = svg_layer(f.read(), "territory-line-layer")
-    m = re.search(r'<line[^>]*x1="([\d.eE+-]+)"[^>]*y1="([\d.eE+-]+)"'
-                  r'[^>]*x2="([\d.eE+-]+)"[^>]*y2="([\d.eE+-]+)"', lay)
-    if not m:
-        return None
-    x1, y1, x2, y2 = (float(v) for v in m.groups())
-    return [list(svg_pt(x1, y1)), list(svg_pt(x2, y2))]
+    return "red" if (cross > 0) == (ref > 0) else "blue"
 
 
-def stale_keys():
-    """{layout key: dataslate date} for layouts the current rapidingress archive predates."""
-    try:
-        with open(STALE, encoding="utf-8") as f:
-            reg = json.load(f)
-    except (OSError, ValueError):
-        return {}
-    disp = {"Take and Hold": "TH", "Purge the Foe": "PF", "Disruption": "DI",
-            "Reconnaissance": "RE", "Priority Assets": "PA"}
-    when = reg.get("dataslate")
-    out = {}
-    for row in reg.get("stale") or []:
-        codes = sorted((disp.get(row.get("disp_a")), disp.get(row.get("disp_b"))),
-                       key=lambda c: CODE_ORDER.index(c) if c in CODE_ORDER else 9)
-        if not all(codes):
-            continue
-        for letter in row.get("layouts") or []:
-            out["%s-%s-%s" % (codes[0], codes[1], letter)] = when
-    return out
+def label_for(kind, owner, n_central):
+    if kind == "central":
+        return ("the central objective" if n_central < 2
+                else "the %s-side central objective" % owner)
+    return "%s's %s objective" % (owner, kind)
 
 
 def main():
+    with open(GWJSON, encoding="utf-8") as f:
+        gw = json.load(f)
     with open(META, encoding="utf-8") as f:
-        meta = json.load(f)
-    stale = stale_keys()
-    with open(RIJSON, encoding="utf-8") as f:
-        ri = {}
-        for x in json.load(f):
-            codes = sorted(x["matchup"], key=CODE_ORDER.index)
-            ri["%s-%s-%s" % (codes[0], codes[1], x["variant"])] = x
+        old = json.load(f)
 
-    stats = {"layouts": 0, "objs": 0, "filled": 0, "replaced": 0, "worst_match": 0.0,
-             "verts_before": 0, "verts_after": 0, "lines": 0, "contained": 0, "max_dev": 0.0,
-             "ter_before": 0, "ter_after": 0, "areas": 0, "ter_layouts": 0, "stale": 0,
-             "problems": []}
+    problems = []
+    stats = collections.Counter()
+    dev_max = 0.0
+    out = {}
 
-    for key, lay in sorted(meta.items()):
-        src = ri.get(key)
-        if not src:
-            stats["problems"].append("%s: absent from rapidingress" % key)
+    for key, lay in sorted(gw.items()):
+        prev = old.get(key)
+        if not prev or any(prev.get(c) is None for c in CARRY):
+            problems.append("%s: no carried mission metadata in the previous meta" % key)
             continue
-        stats["layouts"] += 1
 
-        # group RI objective footprints by objective number; an objective spanning several
-        # footprints keeps the largest (the marker always sits on the main body).
-        groups = {}
-        for piece in src["terrain"]:
-            ob = piece.get("objective")
-            if not ob:
+        areas = []
+        for p in lay["terrain_areas"]:
+            q = G.simplify_ring(p, SIMP_TOL)
+            dev_max = max(dev_max, G.ring_deviation(p, q))
+            areas.append(q)
+        stats["terrain"] += len(areas)
+
+        groups = lay["area_groups"]
+        terrain_areas = [{"id": "%s-T%02d" % (key, gi + 1),
+                          "polys": [areas[i] for i in g]}
+                         for gi, g in enumerate(groups)]
+        stats["areas"] += len(terrain_areas)
+
+        red_zone = centroid(lay["red_poly"])
+        line = lay["territory_line"]
+        n_central = sum(1 for o in lay["objectives"] if o["kind"] == "central")
+
+        objs, claimed = [], {}
+        for o in lay["objectives"]:
+            x, z = o["at"]
+            owner = o.get("owner") or side_of(line, red_zone, x, z)
+            if owner is None:
+                problems.append("%s: cannot place %s objective on a side" % (key, o["kind"]))
                 continue
-            raw = [list(ri_pt(p)) for p in piece["points"]]
-            poly = simplify(raw)
-            # fidelity gate: no raw point may sit further than SIMP_TOL from the kept outline.
-            dev = 0.0
-            for p in raw:
-                dev = max(dev, min(_seg_dist(p, poly[i - 1], poly[i]) for i in range(len(poly))))
-            stats["max_dev"] = max(stats["max_dev"], dev)
-            if dev > SIMP_TOL * 1.5:
-                stats["problems"].append(
-                    "%s: %s simplified outline moved %.2f in" % (key, piece.get("areaId"), dev))
-            g = groups.setdefault(ob.get("number"), [])
-            g.append({"poly": poly, "areaId": piece.get("areaId"), "ob": ob})
-        cands = []
-        for num, g in groups.items():
-            g.sort(key=lambda d: area(d["poly"]), reverse=True)
-            cands.append(g[0])
-
-        objs = lay.get("objectives") or []
-        if len(cands) != len(objs):
-            stats["problems"].append(
-                "%s: %d RI objectives vs %d in meta" % (key, len(cands), len(objs)))
-
-        # bijective nearest-match on the existing marker point, which already carries the
-        # correct red/blue label -- so labels are preserved and only geometry is rebuilt.
-        pairs = sorted(
-            ((math.hypot(o["x"] - centroid(c["poly"])[0], o["z"] - centroid(c["poly"])[1]), oi, ci)
-             for oi, o in enumerate(objs) for ci, c in enumerate(cands)))
-        used_o, used_c = set(), set()
-        for dist, oi, ci in pairs:
-            if oi in used_o or ci in used_c:
-                continue
-            used_o.add(oi)
-            used_c.add(ci)
-            o, c = objs[oi], cands[ci]
+            gi = min(range(len(groups)),
+                     key=lambda t: min(edge_dist(areas[i], x, z) for i in groups[t]))
+            d = min(edge_dist(areas[i], x, z) for i in groups[gi])
+            if gi in claimed:
+                problems.append("%s: %s and %s objectives both resolve to area %s"
+                                % (key, claimed[gi], o["kind"], terrain_areas[gi]["id"]))
+            claimed[gi] = o["kind"]
+            best = max((areas[i] for i in groups[gi]), key=poly_area)
+            rec = {"x": round(x, 2), "z": round(z, 2), "kind": o["kind"],
+                   "label": label_for(o["kind"], owner, n_central),
+                   "poly": best, "areaId": terrain_areas[gi]["id"]}
+            if o.get("restored"):
+                rec["restored"] = True
+                stats["restored"] += 1
+            objs.append(rec)
             stats["objs"] += 1
-            stats["worst_match"] = max(stats["worst_match"], dist)
-            # identity gate: the existing marker must fall INSIDE the area we are about to
-            # attach to it. Distance alone cannot catch a sign flip on a symmetric layout.
-            if in_poly(c["poly"], o["x"], o["z"]):
-                stats["contained"] += 1
-            else:
-                stats["problems"].append(
-                    "%s: %s marker NOT inside its matched area (%.1f in away)"
-                    % (key, o.get("label"), dist))
-            if o.get("poly"):
-                stats["replaced"] += 1
-                stats["verts_before"] += len(o["poly"])
-            else:
-                stats["filled"] += 1
-            stats["verts_after"] += len(c["poly"])
-            o["poly"] = c["poly"]
-            o["areaId"] = c["areaId"]
-            if c["ob"].get("owner"):
-                o["owner"] = c["ob"]["owner"]      # attacker / defender, per the layout
-        for oi, o in enumerate(objs):
-            if oi not in used_o:
-                stats["problems"].append("%s: %s got no area" % (key, o.get("label")))
+            stats["worst_obj_dist"] = max(stats["worst_obj_dist"], int(d * 100))
 
-        # terrain: every footprint, plus the areaId grouping (an 11e terrain AREA is several pieces)
-        areas, flat = {}, []
-        for piece in src["terrain"]:
-            poly = simplify([list(ri_pt(p)) for p in piece["points"]])
-            if len(poly) < 3:
-                continue
-            flat.append(poly)
-            areas.setdefault(piece.get("areaId") or "?", []).append(poly)
-        if flat:
-            stats["ter_before"] += len(lay.get("terrain") or [])
-            stats["ter_after"] += len(flat)
-            stats["areas"] += len(areas)
-            lay["terrain"] = flat
-            lay["terrain_areas"] = [{"id": aid, "polys": ps} for aid, ps in sorted(areas.items())]
-            stats["ter_layouts"] += 1
-        else:
-            stats["problems"].append("%s: no terrain footprints in rapidingress" % key)
+            # LABEL GATE -- zone_tokens() reads these prefixes.
+            if o["kind"] in ("home", "expansion") and not rec["label"].startswith(("red", "blue")):
+                problems.append("%s: %s label %r does not start with an owner"
+                                % (key, o["kind"], rec["label"]))
 
-        if key in stale:
-            lay["stale_dataslate"] = stale[key]
-            stats["stale"] += 1
-        else:
-            lay.pop("stale_dataslate", None)
+        rec = {c: prev[c] for c in CARRY}
+        rec.update({"red_poly": lay["red_poly"], "blue_poly": lay["blue_poly"],
+                    "red_zone": red_zone, "territory_line": line,
+                    "terrain": areas, "terrain_areas": terrain_areas, "objectives": objs})
+        out[key] = rec
 
-        line = territory_line(key)
-        if line:
-            lay["territory_line"] = line
-            stats["lines"] += 1
-        else:
-            stats["problems"].append("%s: no territory line in SVG" % key)
+    if len(out) != 45:
+        problems.append("expected 45 layouts, built %d" % len(out))
+    if dev_max > SIMP_TOL * 1.5:
+        problems.append("simplification moved an outline %.3f in" % dev_max)
 
-    ok = (stats["layouts"] == len(meta) and stats["objs"] == stats["contained"]
-          and stats["lines"] == len(meta) and stats["ter_layouts"] == len(meta)
-          and not stats["problems"])
-
-    print("layouts rebuilt      : %d / %d" % (stats["layouts"], len(meta)))
-    print("objective areas      : %d  (%d newly filled, %d replaced)"
-          % (stats["objs"], stats["filled"], stats["replaced"]))
-    print("marker inside area   : %d / %d   <-- identity gate"
-          % (stats["contained"], stats["objs"]))
-    print("terrain footprints   : %d -> %d  in %d areas" % (
-          stats["ter_before"], stats["ter_after"], stats["areas"]))
-    print("territory lines      : %d" % stats["lines"])
-    print("flagged pre-dataslate: %d  (rapidingress still predates the dataslate)"
-          % stats["stale"])
-    print("worst marker->area   : %.2f in" % stats["worst_match"])
-    print("max outline deviation: %.3f in  (tol %.2f)   <-- shape gate"
-          % (stats["max_dev"], SIMP_TOL))
-    print("vertices (replaced)  : %d -> %d" % (stats["verts_before"], stats["verts_after"]))
-    if stats["problems"]:
-        print("\nPROBLEMS (%d):" % len(stats["problems"]))
-        for p in stats["problems"][:25]:
+    print("layouts rebuilt      : %d" % len(out))
+    print("terrain footprints   : %d  grouped into %d areas" % (stats["terrain"], stats["areas"]))
+    print("objectives           : %d  (%d restored)" % (stats["objs"], stats["restored"]))
+    print("worst objective->area: %.2f in  (GW nudges a badge clear of its own artwork)"
+          % (stats["worst_obj_dist"] / 100.0))
+    print("max outline deviation: %.3f in  (tol %.2f)   <-- shape gate" % (dev_max, SIMP_TOL))
+    print("source               : GW Warhammer Event Companion (rapidingress retired)")
+    if problems:
+        print("\nPROBLEMS (%d):" % len(problems))
+        for p in problems[:25]:
             print("   " + p)
-    if not ok:
         print("\nABORTED -- nothing written.")
         return 1
 
     with open(META, "w", encoding="utf-8") as f:
-        json.dump(meta, f, separators=(",", ":"), ensure_ascii=False)
+        json.dump(out, f, separators=(",", ":"), ensure_ascii=False)
         f.write("\n")
     print("\nOK -- written, %d bytes" % os.path.getsize(META))
     return 0

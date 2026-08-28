@@ -376,9 +376,10 @@ def place(x, z, lay, side=None, rnd=None, radius=0.0):
     if not lay:
         return {}
     out = {}
-    # A balance dataslate revised this layout but rapidingress still serves the pre-dataslate
-    # geometry, so every zone call here is against a board that is no longer the printed one.
-    # Stamped into layouts_meta at rebuild time; clears itself when the archive refreshes.
+    # `stale_dataslate` marked a layout whose geometry lagged the printed board, back when
+    # layouts came from a third-party mirror. They come from GW's own Event Companion now
+    # (2026-08-28), so nothing writes the key any more. The READ stays: a replay downloaded
+    # before the migration carries its own embedded meta and can still have it.
     if lay.get("stale_dataslate"):
         out["provisional"] = lay["stale_dataslate"]
 

@@ -284,7 +284,6 @@
   </div>
 </div>
 <div class="credits">
-  board render: <a href="https://rapidingress.com" target="_blank">rapidingress.com</a> ·
   replays kept 30 days<span id="dlWrap"> · <a id="dlLink" href="#">download offline copy</a></span><span id="saveWrap" style="display:none"> · <a id="saveLink" href="#">save this copy (with your notes &amp; doodles)</a></span>
 </div>
 <div id="lightbox" onclick="this.style.display='none'"><img alt=""></div>
@@ -870,8 +869,8 @@ function draw(){
       : 'what ' + heatOn[0] + "'s deployment line covers", lx, ly);
     ctx.font = (10 * devicePixelRatio) + 'px Segoe UI';
     ctx.fillStyle = '#7a8299';
-    ctx.fillText('official ' + (LAYOUT_KEY || 'layout') + ' geometry, ground level only'
-      + ' · layout data: rapidingress.com', lx, ly + 14 * devicePixelRatio);
+    ctx.fillText('official ' + (LAYOUT_KEY || 'layout') + ' geometry, ground level only',
+                 lx, ly + 14 * devicePixelRatio);
   }
 }
 
